@@ -108,6 +108,20 @@
     display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #17202d; padding-bottom: 8px;
   }
   .sub-col { font-size: 10px; color: var(--muted); }
+  
+  #debugBox {
+    margin-top: 10px;
+    padding: 10px;
+    background: #000;
+    color: #0f0;
+    font-family: monospace;
+    font-size: 11px;
+    border-radius: 8px;
+    max-height: 200px;
+    overflow: auto;
+    white-space: pre-wrap;
+    display: none;
+  }
 </style>
 </head>
 <body>
@@ -221,8 +235,6 @@
         </label>
         <div style="display:flex; gap:4px;">
           <input type="number" id="currentE" step="0.0001" value="0" style="flex:1;">
-          <!-- Hidden Auto Fetch Indicator -->
-          <span id="fetchIndicator" style="display:none; color:var(--accent); font-size:10px; align-self:center;">Updating...</span>
         </div>
         <div id="fetchStatus" style="font-size:10px; color:var(--warn); margin-top:2px; height:14px;"></div>
       </div>
@@ -274,7 +286,13 @@
       </div>
     </div>
 
-    <div class="btns">
+    <!-- Debug Area -->
+    <div style="margin-top:12px;">
+        <button class="secondary" onclick="toggleDebug()" style="font-size:11px; padding:4px 8px;">Toggle API Debug</button>
+        <div id="debugBox"></div>
+    </div>
+
+    <div class="btns" style="margin-top:12px;">
       <button class="primary" id="btn">Generate Schedules</button>
       <button id="btnClear">Clear Tables</button>
     </div>
@@ -313,6 +331,11 @@ function fmtDenom(x, denomDecimals, denomUsd, denomSymbol){
   return denomStr + ' / ' + usdStr;
 }
 
+function toggleDebug() {
+    const el = document.getElementById('debugBox');
+    el.style.display = el.style.display === 'block' ? 'none' : 'block';
+}
+
 function updateAltPriceSummary(){
   const p0El = document.getElementById('p0');
   const denomUsdEl = document.getElementById('denomUsd');
@@ -336,7 +359,7 @@ function updateDenomLabels(sym){
   document.querySelectorAll('.denomLabelShort').forEach(el => { el.textContent = s; });
 }
 
-// --- NEW: Auto Fetch Live Exposure ---
+// --- NEW: Auto Fetch Live Exposure with Debug ---
 let fetchTimeout = null;
 
 async function fetchLiveExposure() {
@@ -344,61 +367,72 @@ async function fetchLiveExposure() {
   const denomUsd = Number(document.getElementById('denomUsd').value || 0);
   const statusEl = document.getElementById('fetchStatus');
   const currentEEl = document.getElementById('currentE');
-  const indEl = document.getElementById('fetchIndicator');
+  const debugBox = document.getElementById('debugBox');
 
   if(!assetSym || assetSym === "") {
     statusEl.textContent = '';
     return;
   }
   if(denomUsd <= 0) {
-    // Can't calculate denominated exposure without price
     return;
   }
 
-  // Show loading state
-  if(indEl) indEl.style.display = 'block';
-  
+  statusEl.textContent = 'Fetching exposure...';
+  statusEl.style.color = 'var(--accent)';
+
   try {
-    // Call our secure Vercel API proxy
     const res = await fetch('/api/exposure');
     
     if (!res.ok) {
         const errText = await res.text();
         console.error("Full API Error:", errText);
+        debugBox.textContent = `Error Status: ${res.status}\nResponse: ${errText}`;
         throw new Error(`Error ${res.status}`);
     }
     
     const data = await res.json();
+    // Dump raw JSON to debug box
+    debugBox.textContent = JSON.stringify(data, null, 2);
     
-    // Assume data is array of objects. Find matching symbol.
     let found = null;
     const searchSym = assetSym.toUpperCase();
     
+    // Flexible matching: try symbol, ticker, asset, name
     if (Array.isArray(data)) {
         found = data.find(p => {
-            const s = (p.symbol || p.ticker || p.asset || '').toUpperCase();
-            return s === searchSym;
+            // Check multiple fields for a match
+            const s1 = (p.symbol || '').toUpperCase();
+            const s2 = (p.ticker || '').toUpperCase();
+            const s3 = (p.asset || '').toUpperCase();
+            // Check if assetSym is contained in the returned string? Or exact match.
+            // Often APIs return "SOL" but user might have "SOLANA".
+            return s1 === searchSym || s2 === searchSym || s3 === searchSym;
         });
+    } else if (typeof data === 'object') {
+        // Handle single object response or keyed response if applicable
+        // Just dump it for now so user can see
     }
 
     if (found) {
-        // Try to get USD value from likely fields in the external API response
         const usdVal = Number(found.usdValue || found.amountUsd || found.positionUsd || found.exposureUsd || 0);
         
         if (usdVal !== 0) {
-            // Convert USD Exposure to Denominated Asset Exposure
             const denomExposure = usdVal / denomUsd;
             currentEEl.value = denomExposure.toFixed(6);
             statusEl.textContent = `Auto-Loaded: $${fmt(usdVal, 0)} exposure`;
             statusEl.style.color = 'var(--good)';
-            // Trigger generate to update charts with new exposure
             generate();
         } else {
-            statusEl.textContent = 'Asset found, 0 exposure.';
+            statusEl.textContent = `Found ${assetSym}, but 0 exposure.`;
             statusEl.style.color = 'var(--warn)';
         }
     } else {
-        statusEl.textContent = `No position found for ${assetSym}.`;
+        // List available symbols to help user debug
+        let avail = "None";
+        if (Array.isArray(data) && data.length > 0) {
+            avail = data.map(p => p.symbol || p.ticker || p.asset || '?').slice(0, 5).join(', ');
+        }
+        statusEl.textContent = `No position found for ${assetSym}. (Seen: ${avail}...)`;
         statusEl.style.color = 'var(--muted)';
     }
 
@@ -406,12 +440,9 @@ async function fetchLiveExposure() {
     console.error(err);
     statusEl.textContent = `Fetch failed: ${err.message}`;
     statusEl.style.color = 'var(--bad)';
-  } finally {
-    if(indEl) indEl.style.display = 'none';
   }
 }
 
-// Trigger auto-fetch with debounce
 function triggerAutoFetch() {
     if(fetchTimeout) clearTimeout(fetchTimeout);
     fetchTimeout = setTimeout(fetchLiveExposure, 500); 
@@ -452,7 +483,6 @@ async function autoFetchPrices(assetSym, denomSym){
       const denomUsdEl = document.getElementById('denomUsd');
       if(denomUsdEl) {
          denomUsdEl.value = denomPriceUsd;
-         // Trigger exposure fetch since denom price changed
          triggerAutoFetch(); 
       }
     }
@@ -488,7 +518,7 @@ async function loadAssetList(){
     return;
   }
 
-  statusEl.textContent = 'Loading asset list...';
+  statusEl.textContent = 'Loading asset list from Google Sheet...';
   sel.innerHTML = '<option value="">– Select asset –</option>';
   
   try{
@@ -509,13 +539,13 @@ async function loadAssetList(){
           sel.appendChild(opt);
         }
       });
-      statusEl.textContent = `Loaded ${data.assets.length} assets.`;
+      statusEl.textContent = `Successfully loaded ${data.assets.length} assets from Google Sheet.`;
     } else {
-      throw new Error('Invalid data.');
+      throw new Error('Invalid data structure returned from Google Sheet.');
     }
   }catch(err){
     console.error('Error loading asset list', err);
-    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load assets.`;
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load asset list. (${err.message})`;
   }
 }
 
@@ -523,7 +553,7 @@ async function loadAssetConfig(symbol){
   if(!symbol) return;
   
   const statusEl = document.getElementById('sheetStatus');
-  statusEl.textContent = `Loading config for ${symbol}...`;
+  statusEl.textContent = `Loading config for ${symbol} from Google Sheet...`;
 
   try{
     const url = `${APPS_SCRIPT_URL}?symbol=${encodeURIComponent(symbol)}`;
@@ -536,9 +566,7 @@ async function loadAssetConfig(symbol){
     if(typeof data.pmin === 'number') document.getElementById('pmin').value = data.pmin;
     if(typeof data.pmax === 'number') document.getElementById('pmax').value = data.pmax;
     if(typeof data.p0   === 'number') document.getElementById('p0').value   = data.p0;
-    // NOTE: We skip overwriting CurrentE here because we want to Auto-Fetch it instead!
-    // if(typeof data.currentE === 'number') document.getElementById('currentE').value = data.currentE;
-    
+    if(typeof data.currentE === 'number') document.getElementById('currentE').value = data.currentE;
     if(typeof data.portfolioSize === 'number') document.getElementById('portfolioSize').value = data.portfolioSize;
     if(typeof data.targetMinPct === 'number') document.getElementById('targetMinPct').value = data.targetMinPct;
     if(typeof data.targetMaxPct === 'number') document.getElementById('targetMaxPct').value = data.targetMaxPct;
@@ -555,16 +583,15 @@ async function loadAssetConfig(symbol){
     
     await autoFetchPrices(symbol, denomSym);
     
-    // Trigger auto fetch exposure
     fetchLiveExposure();
     
     updateAltPriceSummary();
     generate();
-    statusEl.textContent = `Config loaded. Prices & Exposure updating...`;
+    statusEl.textContent = `Config for ${symbol} loaded. Prices auto-updated.`;
 
   }catch(err){
     console.error('Error loading config', err);
-    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}.`;
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}. (${err.message})`;
   }
 }
 
@@ -590,7 +617,7 @@ function buildBands(pmin, pmax, p0, stepPct){
 }
 
 // --------------------------------------------------------------------------
-// Core Logic
+// Core Logic: Calculates strategy for ONE LP setup
 // --------------------------------------------------------------------------
 function calculateStrategy(params, manualBands) {
   const {
@@ -601,7 +628,6 @@ function calculateStrategy(params, manualBands) {
   } = params;
 
   if(!manualBands && !(pmin>0 && pmax>pmin && p0>0)) {
-     // Relaxed check to avoid console errors on partial inputs
      return null;
   }
 
@@ -820,28 +846,37 @@ function renderTripleAggregateTable(container, strategies) {
                
                let targetVal = 0;
                let unit = '';
-               let d1=0, e1=0, d2=0, e2=0, d3=0, e3=0;
+               let d1=0, e1=0;
+               let d2=0, e2=0;
+               let d3=0, e3=0;
 
                if(r.type === 'Below') {
                  targetVal = r.deployUSD; 
                  unit = 'USD';
                  const splitVal = targetVal / 3.0;
+
                  // Q1: USD -> 33%
                  d1 = splitVal; e1 = splitVal;
+                 
                  // Q2: BTC -> 33%
                  d2 = splitVal / btcPrice; e2 = splitVal;
-                 // Q3: USDC -> 33% (Corrected to 1x now)
+                 
+                 // Q3: USDC -> 33%
                  d3 = splitVal; e3 = splitVal;
                  
                } else {
                  targetVal = r.altUnitsAbove;
                  unit = 'SOL';
                  const splitVal = targetVal / 3.0;
+                 
                  // Q1: SOL -> 33%
                  d1 = splitVal; e1 = splitVal;
+                 
                  // Q2: SOL -> 33%
                  d2 = splitVal; e2 = splitVal;
-                 // Q3: JLP -> 33% Eff SOL
+                 
+                 // Q3: JLP -> 33% Effective SOL
+                 // JLP is 50% SOL. To get 'splitVal' effective SOL, we need 2 * splitVal in SOL-Equivalent Value.
                  const jlpAmt = r3.altUnitsAbove || 0;
                  d3 = jlpAmt;
                  if(solPriceUsd > 0) {
@@ -882,13 +917,18 @@ function renderTripleAggregateTable(container, strategies) {
   container.appendChild(div);
 }
 
+// --------------------------------------------------------------------------
+// Rendering Logic
+// --------------------------------------------------------------------------
 function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, assetSymbol, lpId) {
   if(!strategyData) return;
   const { rows, kpi, apr } = strategyData;
+  const dec = parseInt(document.getElementById('dec').value || '4', 10);
   
   const sectionHtml = `
     <div class="section-header">${title}</div>
     <div class="layout-grid">
+      <!-- KPIs -->
       <div class="card">
         <h2>Quick KPIs</h2>
         <div class="kpis">
@@ -901,6 +941,8 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
           <div class="kpi"><b>To Buy+Short</b><div>${fmtDenom(kpi.toBuyShort, 6, denomUsd, denomSymbol)}</div></div>
         </div>
       </div>
+      
+      <!-- APR Charts Placeholder -->
       <div class="card">
         <h2>APR & PnL Analytics</h2>
         <div class="row4">
@@ -910,6 +952,7 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
       </div>
     </div>
 
+    <!-- Table -->
     <div class="card" style="margin-top:14px;">
       <h2>Schedule — ${assetSymbol} / ${denomSymbol}</h2>
       <div class="scroll">
@@ -985,6 +1028,9 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
   }
 }
 
+// --------------------------------------------------------------------------
+// Main Execution
+// --------------------------------------------------------------------------
 function generate() {
   const container = document.getElementById('resultsContainer');
   container.innerHTML = '';
@@ -1008,6 +1054,7 @@ function generate() {
   const strategies = [];
 
   if (isTripleMode) {
+     // A. Reference: Single SOL/USD Strategy
      const solPminUsd = pmin * denomUsd;
      const solPmaxUsd = pmax * denomUsd;
      const solP0Usd   = p0   * denomUsd;
@@ -1025,38 +1072,95 @@ function generate() {
         maxDays: Number(document.getElementById('maxDays').value)
      };
      const refData = calculateStrategy(refParams);
-     strategies.push({ title: `Reference: Single ${assetSymbol}/USD LP (100% Allocation)`, id: 'ref', params: refParams, data: refData });
+     strategies.push({
+       title: `Reference: Single ${assetSymbol}/USD LP (100% Allocation)`,
+       id: 'ref',
+       params: refParams,
+       data: refData
+     });
 
+     // JLP Price setup
      const jlpInputVal = Number(document.getElementById('jlpUsd').value);
      const jlpUsdLive = (jlpInputVal > 0) ? jlpInputVal : (solP0Usd * 0.5); 
      if(jlpInputVal <= 0 && jlpUsdLive > 0) document.getElementById('jlpUsd').value = jlpUsdLive.toFixed(3);
      const getJlpPrice = (solPrice) => jlpUsdLive * (0.5 * (solPrice / solP0Usd) + 0.5);
 
+     // Map Bands for Alignment
      const refBands = refData.rawBands; 
-     const mapBandList = (list, fnMap) => list.map((b, i) => ({ pa: fnMap(b.pa), pb: fnMap(b.pb), type: b.type, origIdx: i + 1 }));
+     const mapBandList = (list, fnMap) => list.map((b, i) => ({
+        pa: fnMap(b.pa),
+        pb: fnMap(b.pb),
+        type: b.type,
+        origIdx: i + 1
+     }));
 
      const bandsQ1 = { down: mapBandList(refBands.down, p => p), up: mapBandList(refBands.up, p => p) };
      const bandsQ2 = { down: mapBandList(refBands.down, p => p / denomUsd), up: mapBandList(refBands.up, p => p / denomUsd) };
      const bandsQ3 = { down: mapBandList(refBands.down, p => getJlpPrice(p)), up: mapBandList(refBands.up, p => getJlpPrice(p)) };
 
+     // Define Strategies (Q1-Q3)
+     // Note: PortfolioSize/CurrentE here are just for individual display. 
+     // The Breakdown Table will override calculations to show perfect 1/3 split.
      const capSplit = totalUsdPort / 3.0;
      const curSplit = totalUsdCurE / 3.0;
 
-     strategies.push({ title: `1. ${assetSymbol} / USD (Equal Split)`, id: 'q1', params: { ...refParams, portfolioSize: capSplit, currentE: curSplit }, customBands: bandsQ1 });
-     strategies.push({ title: `2. ${assetSymbol} / ${denomSymbol} (Equal Split)`, id: 'q2', params: { pmin: pmin, pmax: pmax, p0: p0, stepPct, portfolioSize: portfolioSize / 3.0, currentE: currentE / 3.0, targetMinPct, targetMaxPct, denomSymbol: denomSymbol, denomUsd: denomUsd, assetSymbol: assetSymbol, scaleMode: document.getElementById('scaleMode').value, aprPct: Number(document.getElementById('aprPct').value), maxDays: Number(document.getElementById('maxDays').value) }, customBands: bandsQ2 });
+     // Q1: SOL/USD
      strategies.push({
-       title: `3. JLP / USDC (Asymmetric Split)`, id: 'q3',
+       title: `1. ${assetSymbol} / USD (Equal Split)`,
+       id: 'q1',
+       params: { ...refParams, portfolioSize: capSplit, currentE: curSplit },
+       customBands: bandsQ1
+     });
+     
+     // Q2: SOL/BTC
+     strategies.push({
+       title: `2. ${assetSymbol} / ${denomSymbol} (Equal Split)`,
+       id: 'q2',
        params: {
-         pmin: 0, pmax: 0, p0: 0, stepPct, 
-         portfolioSize: capSplit, currentE: curSplit,
-         targetMinPct: targetMinPct,     
-         targetMaxPct: targetMaxPct * 2, 
+         pmin: pmin, pmax: pmax, p0: p0, stepPct, 
+         portfolioSize: portfolioSize / 3.0, 
+         currentE: currentE / 3.0,
+         targetMinPct, targetMaxPct,
+         denomSymbol: denomSymbol, denomUsd: denomUsd, assetSymbol: assetSymbol,
+         scaleMode: document.getElementById('scaleMode').value,
+         aprPct: Number(document.getElementById('aprPct').value),
+         maxDays: Number(document.getElementById('maxDays').value)
+       },
+       customBands: bandsQ2
+     });
+     
+     // Q3: JLP/USDC
+     // FIX: Asymmetric Scaling.
+     // Below (USD Side): NO Scaling (1x) to deploy equal capital.
+     // Above (SOL Side): 2x Scaling to hold 2x inventory.
+     
+     // This is tricky because the calculator uses a single 'portfolioSize' input.
+     // But calculateStrategy derives below/above from targetMin/Max.
+     // We can trick it by passing specific Min/Max Pct.
+     
+     // For Q3:
+     // targetMinPct -> Governs Below (USD) -> 1x (standard 1/3 share)
+     // targetMaxPct -> Governs Above (Inventory) -> 2x (to hold 2x JLP)
+     
+     strategies.push({
+       title: `3. JLP / USDC (Asymmetric Split)`,
+       id: 'q3',
+       params: {
+         pmin: 0, pmax: 0, p0: 0, stepPct, // ignored
+         portfolioSize: capSplit, 
+         currentE: curSplit,
+         targetMinPct: targetMinPct,     // 1x for Below (USD Capital)
+         targetMaxPct: targetMaxPct * 2, // 2x for Above (JLP Inventory)
          denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP',
-         scaleMode: document.getElementById('scaleMode').value, aprPct: Number(document.getElementById('aprPct').value), maxDays: Number(document.getElementById('maxDays').value)
+         scaleMode: document.getElementById('scaleMode').value,
+         aprPct: Number(document.getElementById('aprPct').value),
+         maxDays: Number(document.getElementById('maxDays').value)
        },
        customBands: bandsQ3
      });
+
   } else {
+     // Standard Modes
      const capitalRatio = isDual || isJlpMode ? 0.5 : 1.0;
      const baseParams = {
         pmin, pmax, p0, stepPct,
@@ -1068,6 +1172,7 @@ function generate() {
         aprPct: Number(document.getElementById('aprPct').value),
         maxDays: Number(document.getElementById('maxDays').value)
      };
+     
      if(isJlpMode) {
         const solPminUsd = pmin * denomUsd;
         const solPmaxUsd = pmax * denomUsd;
@@ -1083,6 +1188,7 @@ function generate() {
         const ratioP0 = solP0Usd / jlpUsdLive;
         const usdPortfolio = (portfolioSize * denomUsd);
         const usdCurrentE  = (currentE * denomUsd); 
+
         strategies.push({ title: `JLP Strategy A: JLP / USDC`, id: 'jlp1', params: { ...baseParams, pmin: jlpPmin, pmax: jlpPmax, p0: jlpP0, portfolioSize: usdPortfolio*0.5, currentE: usdCurrentE*0.5, targetMinPct: targetMinPct*2, targetMaxPct: targetMaxPct*2, denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP' } });
         strategies.push({ title: `JLP Strategy B: SOL / JLP`, id: 'jlp2', params: { ...baseParams, pmin: ratioPmin, pmax: ratioPmax, p0: ratioP0, portfolioSize: (usdPortfolio*0.5)/jlpUsdLive, currentE: (usdCurrentE*0.5)/jlpUsdLive, denomSymbol: 'JLP', denomUsd: jlpUsdLive, assetSymbol: assetSymbol, targetMinPct: targetMinPct*2, targetMaxPct: targetMaxPct*2 } });
      } else {
@@ -1126,15 +1232,36 @@ function generate() {
   if (tMaxEl) tMaxEl.value = isFinite(tMaxVal) ? tMaxVal : 0;
 }
 
+// Global Copy Helper
+window.copyTable = function(lpId) {
+  const el = document.querySelector(`#section_${lpId} table`);
+  if(!el) return;
+  const range = document.createRange();
+  range.selectNode(el);
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+  document.execCommand('copy');
+  window.getSelection().removeAllRanges();
+  alert('Table copied to clipboard');
+};
+
+document.getElementById('btn').addEventListener('click', generate);
+document.getElementById('btnClear').addEventListener('click', () => {
+  document.getElementById('resultsContainer').innerHTML = '';
+});
+
+// Init
 (function(){
   const assetSel = document.getElementById('assetSelect');
   const denomSel = document.getElementById('denomSelect');
   const p0El = document.getElementById('p0');
   const denomUsdEl = document.getElementById('denomUsd');
+  
   const dual = document.getElementById('dualLpMode');
   const jlp = document.getElementById('jlpStrategyMode');
   const triple = document.getElementById('tripleLpMode');
   
+  // Mutual exclusion
   dual.addEventListener('change', function(){ if(this.checked) { jlp.checked=false; triple.checked=false; } });
   jlp.addEventListener('change', function(){ if(this.checked) { dual.checked=false; triple.checked=false; } });
   triple.addEventListener('change', function(){ if(this.checked) { dual.checked=false; jlp.checked=false; } });
@@ -1155,11 +1282,7 @@ function generate() {
   }
 
   [p0El, denomUsdEl].forEach(e => e && e.addEventListener('change', updateAltPriceSummary));
-  [p0El, denomUsdEl].forEach(e => e && e.addEventListener('input', () => {
-      updateAltPriceSummary();
-      // If denom price changes, try fetching updated denom exposure (debounce)
-      triggerAutoFetch();
-  }));
+  [p0El, denomUsdEl].forEach(e => e && e.addEventListener('input', updateAltPriceSummary));
   
   loadAssetList();
   if (denomSel) autoFetchPrices('', denomSel.value);
