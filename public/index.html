@@ -724,6 +724,9 @@ function renderTripleAggregateTable(container, strategies) {
           <tbody>
             ${indicesToShow.map((idx) => {
                const r = refRows[idx];
+               const r1 = getRows(strategiesList[0])[idx] || {};
+               const r2 = getRows(strategiesList[1])[idx] || {};
+               const r3 = getRows(strategiesList[2])[idx] || {};
                
                let targetVal = 0;
                let unit = '';
@@ -736,41 +739,32 @@ function renderTripleAggregateTable(container, strategies) {
                if(r.type === 'Below') {
                  targetVal = r.deployUSD; 
                  unit = 'USD';
-                 const splitVal = targetVal / 3.0;
-
-                 // Q1: USD -> 33%
-                 d1 = splitVal; e1 = splitVal;
                  
-                 // Q2: BTC -> 33%
-                 d2 = splitVal / btcPrice; e2 = splitVal;
+                 // Q1: USD
+                 d1 = r1.deployUSD || 0; e1 = d1;
                  
-                 // Q3: USDC -> 33%
-                 d3 = splitVal; e3 = splitVal;
+                 // Q2: BTC (Value in BTC -> USD)
+                 d2 = r2.deployUSD || 0; e2 = d2 * btcPrice;
+                 
+                 // Q3: USDC
+                 d3 = r3.deployUSD || 0; e3 = d3;
                  
                } else {
                  targetVal = r.altUnitsAbove;
                  unit = 'SOL';
-                 const splitVal = targetVal / 3.0;
                  
-                 // Q1: SOL -> 33%
-                 d1 = splitVal; e1 = splitVal;
+                 // Q1: SOL
+                 d1 = r1.altUnitsAbove || 0; e1 = d1;
                  
-                 // Q2: SOL -> 33%
-                 d2 = splitVal; e2 = splitVal;
+                 // Q2: SOL
+                 d2 = r2.altUnitsAbove || 0; e2 = d2;
                  
-                 // Q3: JLP -> 33% Effective SOL
-                 // JLP is 50% SOL. To get 'splitVal' effective SOL, we need 2 * splitVal in SOL-Equivalent Value.
-                 // Value = 2 * splitVal * SolPrice.
-                 // JLP Units = Value / JlpPrice.
+                 // Q3: JLP (Value in JLP -> SOL)
+                 const jlpAmt = r3.altUnitsAbove || 0;
+                 d3 = jlpAmt;
                  if(solPriceUsd > 0) {
-                    const valUsd = (splitVal * 2) * solPriceUsd; // Value needed
-                    // Wait, simpler: JLP = 0.5 SOL. 
-                    // Effective SOL = JLP_Units * 0.5 * (JlpPrice / SolPrice).
-                    // We want Effective SOL = splitVal.
-                    // JLP_Units = splitVal / (0.5 * JlpPrice / SolPrice)
-                    //           = splitVal * 2 * (SolPrice / JlpPrice)
-                    d3 = splitVal * 2 * (solPriceUsd / jlpUsd);
-                    e3 = splitVal; // By definition
+                    const valUsd = jlpAmt * jlpUsd;
+                    e3 = (valUsd * 0.5) / solPriceUsd; // Implied SOL
                  }
                }
                
@@ -1028,8 +1022,8 @@ function generate() {
          pmin: 0, pmax: 0, p0: 0, stepPct, // ignored
          portfolioSize: capSplit, 
          currentE: curSplit,
-         targetMinPct: targetMinPct * 2, // Scaled target for visual consistency in chart
-         targetMaxPct: targetMaxPct * 2,
+         targetMinPct: targetMinPct, // NO SCALING for Below (USD is 1:1)
+         targetMaxPct: targetMaxPct * 2, // 2x Scaling for Above (JLP Inventory to match SOL)
          denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP',
          scaleMode: document.getElementById('scaleMode').value,
          aprPct: Number(document.getElementById('aprPct').value),
