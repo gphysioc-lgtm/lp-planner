@@ -647,6 +647,146 @@ function calculateStrategy(params) {
 }
 
 // --------------------------------------------------------------------------
+// NEW: Quad LP Breakdown Renderer
+// --------------------------------------------------------------------------
+function renderQuadAggregateTable(container, strategies) {
+  const ref = strategies[0]; // Ref
+  const q1 = strategies[1]; // SOL/USD
+  const q2 = strategies[2]; // SOL/BTC
+  const q3 = strategies[3]; // JLP/USDC
+  const q4 = strategies[4]; // SOL/JLP
+  
+  // Helper to grab row data
+  const getRows = (s) => s.data ? s.data.rows : [];
+  const refRows = getRows(ref);
+  const q1Rows = getRows(q1);
+  const q2Rows = getRows(q2);
+  const q3Rows = getRows(q3);
+  const q4Rows = getRows(q4);
+  
+  // We assume alignment by index
+  if(refRows.length === 0) return;
+
+  // Prices for conversion
+  const denomUsd = ref.params.denomUsd || 1; 
+  const btcPrice = q2.params.denomUsd || 1; // Price of denom for Q2 (BTC)
+  const jlpUsd = q4.params.denomUsd || 1; // Price of denom for Q4 (JLP)
+  // Implied SOL Price from P0 (SOL/BTC) * BTC Price
+  const p0 = Number(document.getElementById('p0').value) || 0;
+  const solPriceUsd = p0 * btcPrice; 
+
+  const html = `
+    <div class="section-header" style="color:#e08aff; border-bottom-color:#e08aff;">
+      Quad LP Breakdown: Per-Band Allocation Check
+    </div>
+    <div class="card" style="margin-top:10px;">
+      <div class="footnote" style="margin-bottom:8px; color:var(--muted);">
+        Breakdown of how the 4 split LPs (25% capital each) sum up to match the Reference (100% capital).<br>
+        <b>Below (USD Target):</b> Q1+Q3 + Q2(BTC->USD) + 50% of Q4(JLP->USD).<br>
+        <b>Above (SOL Target):</b> Q1+Q2+Q4 + 50% of Q3(JLP->SOL).
+      </div>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Band</th>
+              <th>Type</th>
+              <th>Target (Ref)</th>
+              <th>Q1 (SOL/USD)</th>
+              <th>Q2 (SOL/BTC)</th>
+              <th>Q3 (JLP/USDC)</th>
+              <th>Q4 (SOL/JLP)</th>
+              <th>Actual Sum</th>
+              <th>Diff</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${refRows.map((r, i) => {
+               const r1 = q1Rows[i] || {};
+               const r2 = q2Rows[i] || {};
+               const r3 = q3Rows[i] || {};
+               const r4 = q4Rows[i] || {};
+               
+               let targetVal = 0;
+               let v1=0, v2=0, v3=0, v4=0;
+               let sumVal = 0;
+               let unit = '';
+
+               if(r.type === 'Below') {
+                 // Target: USD Amount
+                 targetVal = r.deployUSD; 
+                 unit = 'USD';
+                 
+                 // Q1: USD -> r1.deployUSD is USD
+                 v1 = r1.deployUSD || 0;
+                 
+                 // Q2: BTC -> r2.deployUSD is BTC -> Convert to USD
+                 v2 = (r2.deployUSD || 0) * btcPrice;
+                 
+                 // Q3: USDC -> r3.deployUSD is USDC (USD)
+                 v3 = r3.deployUSD || 0;
+                 
+                 // Q4: JLP -> r4.deployUSD is JLP. JLP = 50% USD.
+                 // We deploy JLP (quote). 50% of that value acts as USD.
+                 v4 = (r4.deployUSD || 0) * jlpUsd * 0.5; 
+                 
+               } else {
+                 // Target: SOL Amount (Inventory)
+                 targetVal = r.altUnitsAbove;
+                 unit = 'SOL';
+                 
+                 // Q1: SOL
+                 v1 = r1.altUnitsAbove || 0;
+                 
+                 // Q2: SOL
+                 v2 = r2.altUnitsAbove || 0;
+                 
+                 // Q3: JLP -> r3.altUnitsAbove is JLP Units (Base).
+                 // JLP = 50% SOL. Convert JLP Units to SOL content.
+                 const jlpAmt = r3.altUnitsAbove || 0;
+                 if(solPriceUsd > 0) {
+                    // Value of JLP in USD = jlpAmt * jlpUsd
+                    // SOL part is 50% of that value = 0.5 * Value
+                    // SOL units = (0.5 * Value) / SolPrice
+                    v3 = (jlpAmt * jlpUsd * 0.5) / solPriceUsd;
+                 }
+                 
+                 // Q4: SOL
+                 v4 = r4.altUnitsAbove || 0;
+               }
+               
+               sumVal = v1 + v2 + v3 + v4;
+               const diff = sumVal - targetVal;
+               const diffPct = (targetVal > 0) ? (diff / targetVal * 100) : 0;
+               
+               if((document.getElementById('showZeros').value!=='show') && (targetVal < 1e-9)) return '';
+
+               return `<tr>
+                 <td style="text-align:left">${r.bandIdx}</td>
+                 <td>${r.type}</td>
+                 <td style="font-weight:bold; color:var(--accent);">${fmt(targetVal, 4)} ${unit}</td>
+                 <td style="color:#888;">${fmt(v1, 4)}</td>
+                 <td style="color:#888;">${fmt(v2, 4)}</td>
+                 <td style="color:#888;">${fmt(v3, 4)}</td>
+                 <td style="color:#888;">${fmt(v4, 4)}</td>
+                 <td style="font-weight:bold;">${fmt(sumVal, 4)} ${unit}</td>
+                 <td style="color:${Math.abs(diffPct)>5?'var(--bad)':'var(--good)'}; font-size:11px;">
+                   ${diff>0?'+':''}${fmt(diff, 2)} (${fmt(diffPct, 1)}%)
+                 </td>
+               </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  container.appendChild(div);
+}
+
+// --------------------------------------------------------------------------
 // Rendering Logic
 // --------------------------------------------------------------------------
 function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, assetSymbol, lpId) {
@@ -1019,6 +1159,11 @@ function generate() {
       console.error("Strategy Gen Error", e);
     }
   });
+  
+  // 4. Render Quad Aggregate (if active)
+  if (isQuadMode) {
+    renderQuadAggregateTable(container, strategies);
+  }
   
   // Update Global Targets Visuals
   const capitalRatio = (isDual || isJlpMode) ? 0.5 : (isQuadMode ? 0.25 : 1.0);
