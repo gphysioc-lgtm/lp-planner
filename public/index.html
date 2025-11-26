@@ -166,15 +166,16 @@
       </div>
     </div>
     
-    <!-- Hidden input for JLP calculation (auto-fetched if mode active) -->
-    <input type="hidden" id="jlpUsd" value="0">
-
     <div class="row4" style="margin-top:6px; grid-template-columns:1fr 3fr;">
       <div>
         <label>Current ALT price (derived)</label>
         <div class="muted" id="altPriceSummary">Set P₀ and denom price to see ALT/USD.</div>
       </div>
-      <div></div>
+      <div>
+        <!-- Exposed JLP Price for JLP Mode visibility -->
+        <label style="color:var(--accent);">JLP Price (USD, for JLP Mode)</label>
+        <input type="number" id="jlpUsd" step="0.001" value="0" style="width:120px; border-color:var(--accent);">
+      </div>
     </div>
 
     <!-- Portfolio + target % -->
@@ -500,7 +501,10 @@ function calculateStrategy(params) {
     scaleMode, aprPct, maxDays
   } = params;
 
-  if(!(pmin>0 && pmax>pmin && p0>0 && p0>=pmin && p0<=pmax)) return null;
+  if(!(pmin>0 && pmax>pmin && p0>0 && p0>=pmin && p0<=pmax)) {
+     console.error('Invalid parameters for Strategy:', params);
+     return null;
+  }
 
   const bands = buildBands(pmin, pmax, p0, stepPct);
   const Ndown = bands.down.length, Nup = bands.up.length;
@@ -795,8 +799,16 @@ function generate() {
     const solP0Usd   = p0   * denomUsd;
     
     // 2. Fetch JLP Pricing
-    const jlpUsdLive = Number(document.getElementById('jlpUsd').value) || (solP0Usd * 0.5 + 1); // Fallback
-    const constPart  = jlpUsdLive - (solP0Usd * 0.5); // "K" from the equation JLP = 0.5*SOL + K
+    // Fallback logic: if JLP USD input is 0, estimate it from SOL/2.
+    // JLP ~ 0.5 * SOL + C. 
+    // We assume C=0 if we lack data, or C = currentJLP - 0.5*currentSOL.
+    const jlpInputVal = Number(document.getElementById('jlpUsd').value);
+    const jlpUsdLive = (jlpInputVal > 0) ? jlpInputVal : (solP0Usd * 0.5); 
+    
+    // If we had to estimate, update the input for visibility
+    if(jlpInputVal <= 0 && jlpUsdLive > 0) document.getElementById('jlpUsd').value = jlpUsdLive.toFixed(3);
+
+    const constPart  = jlpUsdLive - (solP0Usd * 0.5); 
     
     // 3. Define the JLP Price Function
     // JlpPrice(SolPrice) = 0.5 * SolPrice + K
@@ -820,16 +832,22 @@ function generate() {
     
     // 5. Capital Split (50/50 USD Value)
     const usdPortfolio = (portfolioSize * denomUsd);
-    const usdCurrentE  = (currentE * denomUsd); // Simplified approximation
+    const usdCurrentE  = (currentE * denomUsd); 
 
+    // Strategy A: JLP / USDC
+    // IMPORTANT: Target Exposure Scaling.
+    // JLP has 0.5 beta to SOL. To get equivalent SOL notional exposure using JLP, 
+    // we need 2x the notional exposure in JLP terms.
+    // So we multiply targetMinPct and targetMaxPct by 2.
     strategies.push({
-      title: `JLP Strategy A: JLP / USDC (Dampened Exposure)`,
+      title: `JLP Strategy A: JLP / USDC (Targets scaled 2x for SOL Exposure)`,
       id: 'jlp1',
       params: {
         pmin: jlpPmin, pmax: jlpPmax, p0: jlpP0, stepPct,
         portfolioSize: usdPortfolio * 0.5,
         currentE: usdCurrentE * 0.5,
-        targetMinPct, targetMaxPct,
+        targetMinPct: targetMinPct * 2,
+        targetMaxPct: targetMaxPct * 2,
         denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP',
         scaleMode: document.getElementById('scaleMode').value,
         aprPct: Number(document.getElementById('aprPct').value),
@@ -844,7 +862,7 @@ function generate() {
         pmin: ratioPmin, pmax: ratioPmax, p0: ratioP0, stepPct,
         portfolioSize: (usdPortfolio * 0.5) / jlpUsdLive, // Capital in Denom terms (JLP)
         currentE: (usdCurrentE * 0.5) / jlpUsdLive,
-        targetMinPct, targetMaxPct,
+        targetMinPct, targetMaxPct, // Keep 1x (SOL is asset)
         denomSymbol: 'JLP', denomUsd: jlpUsdLive, assetSymbol: 'SOL',
         scaleMode: document.getElementById('scaleMode').value,
         aprPct: Number(document.getElementById('aprPct').value),
@@ -901,8 +919,12 @@ function generate() {
 
   // 3. Calc & Render
   strategies.forEach(s => {
-    const data = calculateStrategy(s.params);
-    renderLPSection(container, s.title, data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id);
+    try {
+      const data = calculateStrategy(s.params);
+      renderLPSection(container, s.title, data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id);
+    } catch(e) {
+      console.error("Strategy Gen Error", e);
+    }
   });
   
   // Update Global Targets Visuals
