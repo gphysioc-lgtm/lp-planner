@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>CL LP Exposure Planner — Denom Asset Notional, Pmin/Pmax vs Denom</title>
+<title>CL LP Exposure Planner — Quote Asset Notional</title>
 <style>
   :root {
     --bg:#0b0f14; --card:#101620; --ink:#e8eef6; --muted:#9fb1c7;
@@ -23,7 +23,6 @@
   }
   h1 { margin:0; font-size:15px; letter-spacing:.3px; font-weight:600; }
   .wrap { padding:16px 18px 36px; max-width:2000px; margin:0 auto; }
-  /* Changed grid to simple flex column for the results to stack */
   .layout-grid { display:grid; grid-template-columns:1.15fr 1fr; gap:14px; align-items:start; }
   
   .card {
@@ -39,7 +38,6 @@
     -moz-appearance: textfield;
   }
   input[readonly] { background: var(--highlight); color: var(--accent); }
-  /* Custom Checkbox */
   .chk-row { display:flex; align-items:center; gap:8px; margin-top:8px; }
   input[type=checkbox] { width:auto; transform:scale(1.2); cursor:pointer; }
   
@@ -139,7 +137,6 @@
           <option value="ETH">ETH</option>
           <option value="SOL">SOL</option>
           <option value="BNB">BNB</option>
-          <option value="JLP">JLP (Jupiter LP)</option>
         </select>
       </div>
       <div>
@@ -168,6 +165,9 @@
         <input type="number" id="p0" step="0.00000001" value="0.00020800">
       </div>
     </div>
+    
+    <!-- Hidden input for JLP calculation (auto-fetched if mode active) -->
+    <input type="hidden" id="jlpUsd" value="0">
 
     <div class="row4" style="margin-top:6px; grid-template-columns:1fr 3fr;">
       <div>
@@ -191,10 +191,14 @@
         <label>Target net exposure @ Pmax (% of portfolio)</label>
         <input type="number" id="targetMaxPct" step="0.01" value="-100">
       </div>
-      <div style="display:flex; align-items:flex-end;">
+      <div style="display:flex; flex-direction:column; gap:6px;">
          <div class="chk-row">
             <input type="checkbox" id="dualLpMode">
-            <label for="dualLpMode" style="margin:0; font-size:12px; color:var(--ink); font-weight:600;">Dual LP Mode (50/50 Split)</label>
+            <label for="dualLpMode" style="margin:0; font-size:12px; color:var(--ink); font-weight:600;">Dual LP (50/50 Split)</label>
+         </div>
+         <div class="chk-row">
+            <input type="checkbox" id="jlpStrategyMode">
+            <label for="jlpStrategyMode" style="margin:0; font-size:12px; color:var(--accent); font-weight:600;">JLP Strategy Mode</label>
          </div>
       </div>
     </div>
@@ -327,6 +331,7 @@ async function autoFetchPrices(assetSym, denomSym){
 
   const assetId = COINGECKO_IDS[(assetSym || '').toUpperCase()];
   const denomId = COINGECKO_IDS[(denomSym || '').toUpperCase()];
+  const jlpId   = COINGECKO_IDS['JLP'];
 
   if(!denomId){
     console.log('No denom ID found for auto-fetch');
@@ -335,6 +340,7 @@ async function autoFetchPrices(assetSym, denomSym){
 
   let idsToFetch = denomId;
   if(assetId) idsToFetch += ',' + assetId;
+  if(jlpId)   idsToFetch += ',' + jlpId;
 
   try {
     if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
@@ -354,6 +360,10 @@ async function autoFetchPrices(assetSym, denomSym){
     if(denomPriceUsd){
       const denomUsdEl = document.getElementById('denomUsd');
       if(denomUsdEl) denomUsdEl.value = denomPriceUsd;
+    }
+
+    if(jlpId && data[jlpId]?.usd){
+       document.getElementById('jlpUsd').value = data[jlpId].usd;
     }
 
     if(assetId && data[assetId]?.usd && denomPriceUsd){
@@ -685,22 +695,9 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
           <tbody>
              ${rows.map(r => {
                // Special display for "Deploy ALT value"
-               // If denomUsd > 0 (normal), we can calc usd value.
-               // In Dual Mode LP2, denomUsd is 1 (it IS USD).
                
                let altValDisplay = '';
-               // For LP1: r.deployAltUsd is in Denom (BTC).
-               // Value in Alt = r.deployAltUsd / p0_of_this_lp? No, logic is tricky.
-               // Wait, r.deployAltUsd IS the value in Denom units.
-               // So Alt Units = r.deployAltUsd / (Band Start Price Pa).
-               // User wants "Alt amount + USD amount".
-               
-               // Calculate actual Price P0 for this LP context to display consistently
-               // Actually we can just use the row data.
-               // Alt Units = r.altUnitsAbove * b.pa (wait, altUnitsAbove = deployAltUsd / pa)
-               // So AltUnits = r.altUnitsAbove * r.pa? No. 
-               // r.altUnitsAbove is literally "Units of Alt".
-               
+               // Calculate display values
                const altAmt = r.altUnitsAbove; 
                const usdVal = r.deployAltUsd * denomUsd;
                
@@ -756,7 +753,6 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
       },
       options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{display:false}, y:{display:false}} }
     });
-    // Simplified chart for brevity in dual mode
   }
 }
 
@@ -784,57 +780,123 @@ function generate() {
   const targetMaxPct = Number(document.getElementById('targetMaxPct').value);
   
   const isDual = document.getElementById('dualLpMode').checked;
+  const isJlpMode = document.getElementById('jlpStrategyMode').checked;
 
-  // 2. Prepare Strategies
   const strategies = [];
 
-  // Strategy A: Primary (ALT / Denom)
-  // If dual, use 50% capital
-  const capitalRatio = isDual ? 0.5 : 1.0;
-  
-  strategies.push({
-    title: isDual ? `LP 1: ${assetSymbol} / ${denomSymbol} (50% Allocation)` : 'Schedule',
-    id: 'lp1',
-    params: {
-      pmin, pmax, p0, stepPct,
-      portfolioSize: portfolioSize * capitalRatio,
-      currentE: currentE * capitalRatio,
-      targetMinPct, targetMaxPct,
-      denomSymbol, denomUsd, assetSymbol,
-      scaleMode: document.getElementById('scaleMode').value,
-      aprPct: Number(document.getElementById('aprPct').value),
-      maxDays: Number(document.getElementById('maxDays').value)
-    }
-  });
-
-  // Strategy B: Secondary (ALT / USD) -- Only if Dual
-  if(isDual) {
-    // Convert Prices from ALT/Denom to ALT/USD
-    const usdPmin = pmin * denomUsd;
-    const usdPmax = pmax * denomUsd;
-    const usdP0   = p0   * denomUsd;
+  // ---------------------------------------------------------
+  // MODE: JLP STRATEGY (SOL Hedged)
+  // ---------------------------------------------------------
+  if (isJlpMode) {
+    // We treat the inputs as "USD-equivalent settings for SOL".
+    // 1. Calculate USD inputs
+    const solPminUsd = pmin * denomUsd;
+    const solPmaxUsd = pmax * denomUsd;
+    const solP0Usd   = p0   * denomUsd;
     
-    // Convert Capital from Denom to USD
-    // Portfolio (Denom) * 0.5 * DenomUSD = Portfolio (USD)
-    const usdPortfolio = (portfolioSize * 0.5) * denomUsd;
-    const usdCurrentE  = (currentE * 0.5) * denomUsd;
+    // 2. Fetch JLP Pricing
+    const jlpUsdLive = Number(document.getElementById('jlpUsd').value) || (solP0Usd * 0.5 + 1); // Fallback
+    const constPart  = jlpUsdLive - (solP0Usd * 0.5); // "K" from the equation JLP = 0.5*SOL + K
+    
+    // 3. Define the JLP Price Function
+    // JlpPrice(SolPrice) = 0.5 * SolPrice + K
+    const getJlpPrice = (solPrice) => (solPrice * 0.5) + constPart;
+    
+    // 4. Calculate Derived Ranges for Pools
+    
+    // --- POOL A: JLP / USDC ---
+    // User buys JLP as it drops. Range based on SOL drop.
+    // Pmin = JlpPrice(SolPmin)
+    const jlpPmin = getJlpPrice(solPminUsd);
+    const jlpPmax = getJlpPrice(solPmaxUsd);
+    const jlpP0   = jlpUsdLive;
+    
+    // --- POOL B: SOL / JLP ---
+    // User buys SOL as ratio drops.
+    // Ratio = SolPrice / JlpPrice(SolPrice)
+    const ratioPmin = solPminUsd / getJlpPrice(solPminUsd);
+    const ratioPmax = solPmaxUsd / getJlpPrice(solPmaxUsd);
+    const ratioP0   = solP0Usd / jlpUsdLive;
+    
+    // 5. Capital Split (50/50 USD Value)
+    const usdPortfolio = (portfolioSize * denomUsd);
+    const usdCurrentE  = (currentE * denomUsd); // Simplified approximation
 
     strategies.push({
-      title: `LP 2: ${assetSymbol} / USD (50% Allocation - Converted)`,
-      id: 'lp2',
+      title: `JLP Strategy A: JLP / USDC (Dampened Exposure)`,
+      id: 'jlp1',
       params: {
-        pmin: usdPmin, pmax: usdPmax, p0: usdP0, stepPct,
-        portfolioSize: usdPortfolio,
-        currentE: usdCurrentE,
+        pmin: jlpPmin, pmax: jlpPmax, p0: jlpP0, stepPct,
+        portfolioSize: usdPortfolio * 0.5,
+        currentE: usdCurrentE * 0.5,
         targetMinPct, targetMaxPct,
-        denomSymbol: 'USD',
-        denomUsd: 1, // It is already USD
-        assetSymbol,
+        denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP',
         scaleMode: document.getElementById('scaleMode').value,
         aprPct: Number(document.getElementById('aprPct').value),
         maxDays: Number(document.getElementById('maxDays').value)
       }
     });
+    
+    strategies.push({
+      title: `JLP Strategy B: SOL / JLP (Ratio Exposure)`,
+      id: 'jlp2',
+      params: {
+        pmin: ratioPmin, pmax: ratioPmax, p0: ratioP0, stepPct,
+        portfolioSize: (usdPortfolio * 0.5) / jlpUsdLive, // Capital in Denom terms (JLP)
+        currentE: (usdCurrentE * 0.5) / jlpUsdLive,
+        targetMinPct, targetMaxPct,
+        denomSymbol: 'JLP', denomUsd: jlpUsdLive, assetSymbol: 'SOL',
+        scaleMode: document.getElementById('scaleMode').value,
+        aprPct: Number(document.getElementById('aprPct').value),
+        maxDays: Number(document.getElementById('maxDays').value)
+      }
+    });
+
+  } else {
+    // ---------------------------------------------------------
+    // MODE: STANDARD / DUAL
+    // ---------------------------------------------------------
+    const capitalRatio = isDual ? 0.5 : 1.0;
+    
+    // LP 1: Primary
+    strategies.push({
+      title: isDual ? `LP 1: ${assetSymbol} / ${denomSymbol} (50% Allocation)` : 'Schedule',
+      id: 'lp1',
+      params: {
+        pmin, pmax, p0, stepPct,
+        portfolioSize: portfolioSize * capitalRatio,
+        currentE: currentE * capitalRatio,
+        targetMinPct, targetMaxPct,
+        denomSymbol, denomUsd, assetSymbol,
+        scaleMode: document.getElementById('scaleMode').value,
+        aprPct: Number(document.getElementById('aprPct').value),
+        maxDays: Number(document.getElementById('maxDays').value)
+      }
+    });
+
+    // LP 2: Secondary (USD) -- Only if Dual
+    if(isDual) {
+      const usdPmin = pmin * denomUsd;
+      const usdPmax = pmax * denomUsd;
+      const usdP0   = p0   * denomUsd;
+      const usdPortfolio = (portfolioSize * 0.5) * denomUsd;
+      const usdCurrentE  = (currentE * 0.5) * denomUsd;
+
+      strategies.push({
+        title: `LP 2: ${assetSymbol} / USD (50% Allocation - Converted)`,
+        id: 'lp2',
+        params: {
+          pmin: usdPmin, pmax: usdPmax, p0: usdP0, stepPct,
+          portfolioSize: usdPortfolio,
+          currentE: usdCurrentE,
+          targetMinPct, targetMaxPct,
+          denomSymbol: 'USD', denomUsd: 1, assetSymbol,
+          scaleMode: document.getElementById('scaleMode').value,
+          aprPct: Number(document.getElementById('aprPct').value),
+          maxDays: Number(document.getElementById('maxDays').value)
+        }
+      });
+    }
   }
 
   // 3. Calc & Render
@@ -843,7 +905,8 @@ function generate() {
     renderLPSection(container, s.title, data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id);
   });
   
-  // Update Global Targets Inputs just for visual reference (shows LP1 values)
+  // Update Global Targets Visuals
+  const capitalRatio = isDual || isJlpMode ? 0.5 : 1.0;
   const tMinEl = document.getElementById('targetMin');
   const tMaxEl = document.getElementById('targetMax');
   const tMinVal = (portfolioSize * capitalRatio) * targetMinPct / 100;
@@ -876,6 +939,14 @@ document.getElementById('btnClear').addEventListener('click', () => {
   const denomSel = document.getElementById('denomSelect');
   const p0El = document.getElementById('p0');
   const denomUsdEl = document.getElementById('denomUsd');
+  
+  // Handlers for checkboxes to ensure mutual exclusivity if desired (optional)
+  document.getElementById('dualLpMode').addEventListener('change', function(){
+    if(this.checked) document.getElementById('jlpStrategyMode').checked = false;
+  });
+  document.getElementById('jlpStrategyMode').addEventListener('change', function(){
+    if(this.checked) document.getElementById('dualLpMode').checked = false;
+  });
 
   if (assetSel) {
     assetSel.addEventListener('change', () => {
@@ -887,7 +958,6 @@ document.getElementById('btnClear').addEventListener('click', () => {
   if (denomSel) {
     denomSel.addEventListener('change', () => {
       updateDenomLabels(denomSel.value);
-      // Fix ReferenceError: call autoFetchPrices instead of autoFetchDenomPrice
       const currentAsset = assetSel ? assetSel.value : '';
       autoFetchPrices(currentAsset, denomSel.value);
     });
@@ -896,11 +966,8 @@ document.getElementById('btnClear').addEventListener('click', () => {
   [p0El, denomUsdEl].forEach(e => e && e.addEventListener('change', updateAltPriceSummary));
   [p0El, denomUsdEl].forEach(e => e && e.addEventListener('input', updateAltPriceSummary));
   
-  // Load initial list logic
   loadAssetList();
-  if (denomSel) {
-    autoFetchPrices('', denomSel.value);
-  }
+  if (denomSel) autoFetchPrices('', denomSel.value);
   updateAltPriceSummary();
 })();
 </script>
