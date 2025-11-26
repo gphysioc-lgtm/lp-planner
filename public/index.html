@@ -800,32 +800,30 @@ function generate() {
     
     // 2. Fetch JLP Pricing
     // Fallback logic: if JLP USD input is 0, estimate it from SOL/2.
-    // JLP ~ 0.5 * SOL + C. 
-    // We assume C=0 if we lack data, or C = currentJLP - 0.5*currentSOL.
     const jlpInputVal = Number(document.getElementById('jlpUsd').value);
     const jlpUsdLive = (jlpInputVal > 0) ? jlpInputVal : (solP0Usd * 0.5); 
     
     // If we had to estimate, update the input for visibility
     if(jlpInputVal <= 0 && jlpUsdLive > 0) document.getElementById('jlpUsd').value = jlpUsdLive.toFixed(3);
 
-    const constPart  = jlpUsdLive - (solP0Usd * 0.5); 
-    
     // 3. Define the JLP Price Function
-    // JlpPrice(SolPrice) = 0.5 * SolPrice + K
-    const getJlpPrice = (solPrice) => (solPrice * 0.5) + constPart;
+    // FIX: Use 50/50 Weight model, not Unit model.
+    // J(S) = J0 * (0.5 * (S / S0) + 0.5)
+    const getJlpPrice = (solPrice) => {
+       if(solP0Usd <= 0) return 0;
+       return jlpUsdLive * (0.5 * (solPrice / solP0Usd) + 0.5);
+    };
     
     // 4. Calculate Derived Ranges for Pools
     
     // --- POOL A: JLP / USDC ---
     // User buys JLP as it drops. Range based on SOL drop.
-    // Pmin = JlpPrice(SolPmin)
     const jlpPmin = getJlpPrice(solPminUsd);
     const jlpPmax = getJlpPrice(solPmaxUsd);
     const jlpP0   = jlpUsdLive;
     
     // --- POOL B: SOL / JLP ---
     // User buys SOL as ratio drops.
-    // Ratio = SolPrice / JlpPrice(SolPrice)
     const ratioPmin = solPminUsd / getJlpPrice(solPminUsd);
     const ratioPmax = solPmaxUsd / getJlpPrice(solPmaxUsd);
     const ratioP0   = solP0Usd / jlpUsdLive;
@@ -838,7 +836,6 @@ function generate() {
     // IMPORTANT: Target Exposure Scaling.
     // JLP has 0.5 beta to SOL. To get equivalent SOL notional exposure using JLP, 
     // we need 2x the notional exposure in JLP terms.
-    // So we multiply targetMinPct and targetMaxPct by 2.
     strategies.push({
       title: `JLP Strategy A: JLP / USDC (Targets scaled 2x for SOL Exposure)`,
       id: 'jlp1',
@@ -862,7 +859,8 @@ function generate() {
         pmin: ratioPmin, pmax: ratioPmax, p0: ratioP0, stepPct,
         portfolioSize: (usdPortfolio * 0.5) / jlpUsdLive, // Capital in Denom terms (JLP)
         currentE: (usdCurrentE * 0.5) / jlpUsdLive,
-        targetMinPct, targetMaxPct, // Keep 1x (SOL is asset)
+        targetMinPct: targetMinPct * 2, // Scaled for JLP2 as well
+        targetMaxPct: targetMaxPct * 2,
         denomSymbol: 'JLP', denomUsd: jlpUsdLive, assetSymbol: 'SOL',
         scaleMode: document.getElementById('scaleMode').value,
         aprPct: Number(document.getElementById('aprPct').value),
