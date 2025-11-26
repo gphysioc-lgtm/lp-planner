@@ -204,7 +204,7 @@
          </div>
          <div class="chk-row">
             <input type="checkbox" id="quadLpMode">
-            <label for="quadLpMode" style="margin:0; font-size:12px; color:#e08aff; font-weight:600;">Quad Split (25% Each)</label>
+            <label for="quadLpMode" style="margin:0; font-size:12px; color:#e08aff; font-weight:600;">Quad Split (Smart Weighted)</label>
          </div>
       </div>
     </div>
@@ -812,7 +812,9 @@ function renderQuadAggregateTable(container, strategies) {
                  <td style="border-left:1px solid #333;">${fmt(d3, 2)}</td><td style="color:#aaa;">${fmt(e3, 2)}</td>
                  <td style="border-left:1px solid #333;">${fmt(d4, 2)}</td><td style="color:#aaa;">${fmt(e4, 2)}</td>
                  
-                 <td style="font-weight:bold; border-left:1px solid #333;">${fmt(sumVal, 2)} ${unit}</td>
+                 <td style="font-weight:bold; border-left:1px solid #333;">
+                    ${fmt(sumVal, 2)} ${unit}
+                 </td>
                  <td style="color:${Math.abs(diffPct)>5?'var(--bad)':'var(--good)'}; font-size:11px;">
                    ${diff>0?'+':''}${fmt(diff, 2)} (${fmt(diffPct, 1)}%)
                  </td>
@@ -981,7 +983,6 @@ function generate() {
   // =======================================================================
   if (isQuadMode) {
      // A. Reference: Single SOL/USD Strategy
-     // We treat the inputs as pure USD inputs for visualization
      const solPminUsd = pmin * denomUsd;
      const solPmaxUsd = pmax * denomUsd;
      const solP0Usd   = p0   * denomUsd;
@@ -1007,9 +1008,24 @@ function generate() {
        data: refData
      });
 
-     // 2. Setup Quad Splits (25% Capital Each)
-     const quarterPortUsd = totalUsdPort * 0.25;
-     const quarterCurrUsd = totalUsdCurE * 0.25;
+     // 2. Setup Quad Splits (Smart Weighted Capital)
+     // Goal: Equal Effective Exposure. JLP pools need 2x capital to match SOL pools.
+     // Weights: Q1=1, Q2=1, Q3=2, Q4=2. Total=6.
+     // This forces the 'Effective' contribution of each to be ~25% of total.
+     const weightUnit = totalUsdPort / 4.0; // Base unit of exposure (25% of Total Target)
+     const currUnit   = totalUsdCurE / 4.0;
+
+     // Capital Allocations
+     const capQ1 = weightUnit * 1.0; 
+     const capQ2 = weightUnit * 1.0;
+     const capQ3 = weightUnit * 2.0; // Double Capital for JLP
+     const capQ4 = weightUnit * 2.0; // Double Capital for JLP
+     
+     // Current Exposure Allocations (same ratio)
+     const curQ1 = currUnit * 1.0;
+     const curQ2 = currUnit * 1.0;
+     const curQ3 = currUnit * 2.0;
+     const curQ4 = currUnit * 2.0;
      
      // 3. Setup JLP Pricing for mappings
      const jlpInputVal = Number(document.getElementById('jlpUsd').value);
@@ -1020,10 +1036,7 @@ function generate() {
      const getJlpPrice = (solPrice) => jlpUsdLive * (0.5 * (solPrice / solP0Usd) + 0.5);
 
      // 4. Map Reference Bands to Custom Bands for each Strategy
-     // This forces alignment: Q1-Q4 will have exactly the same number of bands as Ref
-     const refBands = refData.rawBands; // {down:[], up:[]}
-     
-     // Helper to map a band object
+     const refBands = refData.rawBands; 
      const mapBandList = (list, fnMap) => list.map((b, i) => ({
         pa: fnMap(b.pa),
         pb: fnMap(b.pb),
@@ -1055,37 +1068,24 @@ function generate() {
         up:   mapBandList(refBands.up,   p => p / getJlpPrice(p))
      };
 
-     // 5. Define Strategies with Custom Bands
+     // 5. Define Strategies
      
-     // Correct Params for Q3/Q4 - calculate them from SOL ranges
-     const jlpPmin = getJlpPrice(solPminUsd);
-     const jlpPmax = getJlpPrice(solPmaxUsd);
-     const jlpP0   = jlpUsdLive;
-     
-     const ratioPmin = solPminUsd / getJlpPrice(solPminUsd);
-     const ratioPmax = solPmaxUsd / getJlpPrice(solPmaxUsd);
-     const ratioP0   = solP0Usd / jlpUsdLive;
-
      // Q1
      strategies.push({
-       title: `1. ${assetSymbol} / USD (25% Cap)`,
+       title: `1. ${assetSymbol} / USD (Standard Exposure)`,
        id: 'q1',
-       params: {
-         ...refParams,
-         portfolioSize: quarterPortUsd,
-         currentE: quarterCurrUsd
-       },
+       params: { ...refParams, portfolioSize: capQ1, currentE: curQ1 },
        customBands: bandsQ1
      });
      
      // Q2
      strategies.push({
-       title: `2. ${assetSymbol} / ${denomSymbol} (25% Cap)`,
+       title: `2. ${assetSymbol} / ${denomSymbol} (Standard Exposure)`,
        id: 'q2',
        params: {
          pmin: pmin, pmax: pmax, p0: p0, stepPct, 
-         portfolioSize: portfolioSize * 0.25, // BTC
-         currentE: currentE * 0.25, // BTC
+         portfolioSize: capQ2 / denomUsd, // Convert USD Cap to BTC Cap
+         currentE: curQ2 / denomUsd,
          targetMinPct, targetMaxPct,
          denomSymbol: denomSymbol, denomUsd: denomUsd, assetSymbol: assetSymbol,
          scaleMode: document.getElementById('scaleMode').value,
@@ -1097,12 +1097,12 @@ function generate() {
      
      // Q3
      strategies.push({
-       title: `3. JLP / USDC (25% Cap, Forced Band Alignment, 2x Exposure)`,
+       title: `3. JLP / USDC (2x Capital for Equal Exposure)`,
        id: 'q3',
        params: {
-         pmin: jlpPmin, pmax: jlpPmax, p0: jlpP0, stepPct, 
-         portfolioSize: quarterPortUsd,
-         currentE: quarterCurrUsd,
+         pmin: 0, pmax: 0, p0: 0, stepPct, // ignored
+         portfolioSize: capQ3, // USD Cap
+         currentE: curQ3,
          targetMinPct: targetMinPct * 2,
          targetMaxPct: targetMaxPct * 2,
          denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP',
@@ -1115,12 +1115,12 @@ function generate() {
      
      // Q4
      strategies.push({
-       title: `4. ${assetSymbol} / JLP (25% Cap, Forced Band Alignment, 2x Exposure)`,
+       title: `4. ${assetSymbol} / JLP (2x Capital for Equal Exposure)`,
        id: 'q4',
        params: {
-         pmin: ratioPmin, pmax: ratioPmax, p0: ratioP0, stepPct,
-         portfolioSize: quarterPortUsd / jlpUsdLive, // JLP Terms
-         currentE: quarterCurrUsd / jlpUsdLive,
+         pmin: 0, pmax: 0, p0: 0, stepPct, // ignored
+         portfolioSize: capQ4 / jlpUsdLive, // JLP Cap
+         currentE: curQ4 / jlpUsdLive,
          targetMinPct: targetMinPct * 2,
          targetMaxPct: targetMaxPct * 2,
          denomSymbol: 'JLP', denomUsd: jlpUsdLive, assetSymbol: assetSymbol,
@@ -1132,10 +1132,8 @@ function generate() {
      });
 
   } 
-  // ... (Standard Mode / JLP Mode remain same logic but simplified here for brevity) ...
+  // ... (Standard Mode / JLP Mode remain same logic) ...
   else {
-     // Standard execution logic (omitted changes, assumed same)
-     // Re-implement standard loop if not quad mode
      const capitalRatio = isDual || isJlpMode ? 0.5 : 1.0;
      const baseParams = {
         pmin, pmax, p0, stepPct,
@@ -1149,7 +1147,6 @@ function generate() {
      };
      
      if(isJlpMode) {
-        // ... existing JLP logic ...
         const solPminUsd = pmin * denomUsd;
         const solPmaxUsd = pmax * denomUsd;
         const solP0Usd   = p0   * denomUsd;
@@ -1190,7 +1187,6 @@ function generate() {
   }
 
   // 3. Calc & Render
-  // Note: Ref was already calc'd if Quad Mode
   strategies.forEach(s => {
     try {
       if(!s.data) s.data = calculateStrategy(s.params, s.customBands);
