@@ -467,7 +467,7 @@ const COINGECKO_IDS = {
   XRP: 'ripple',
   LDO: 'lido-dao',
   UNI: 'uniswap',
-  ASTER: 'astar' // Added ASTER mapping to Astar Network
+  ASTER: 'aster-2' // CORRECTED: ASTER mapping to the 'aster-2' API ID
 };
 
 function fmt(x, d){
@@ -549,6 +549,16 @@ async function autoFetchPrices(assetSym, denomSym){
   if(assetId) idsToFetch += ',' + assetId;
 
   try {
+    // --- FIX START: Handle Preview/Local Environment ---
+    // Relative URLs like '/api/price' fail in blob/file previews because there is no backend.
+    if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
+      console.log("Environment check: Vercel API is not available in local preview (blob/file). Skipping price fetch.");
+      const sheetStatus = document.getElementById('sheetStatus');
+      if(sheetStatus) sheetStatus.innerHTML += ' <span style="color:var(--warn)">(Live prices require Vercel deployment)</span>';
+      return;
+    }
+    // --- FIX END ---
+
     // CHANGED: Call local Vercel API proxy instead of external CoinGecko API directly
     const url = `/api/price?ids=${encodeURIComponent(idsToFetch)}&vs_currencies=usd`;
     
@@ -608,10 +618,10 @@ async function loadAssetList(){
     
     if(data.assets && Array.isArray(data.assets)){
       data.assets.forEach(sym => {
-        if(sym && sym.trim() !== ''){
+        if(sym && String(sym).trim() !== ''){
           const opt = document.createElement('option');
-          opt.value = sym;
-          opt.textContent = sym;
+          opt.value = String(sym).trim();
+          opt.textContent = String(sym).trim();
           sel.appendChild(opt);
         }
       });
@@ -1168,25 +1178,33 @@ loadAssetList();
 
 (function(){
   const assetSel = document.getElementById('assetSelect');
+  const denomSel = document.getElementById('denomSelect'); // Define this earlier
+
   if(assetSel){
     assetSel.addEventListener('change', () => {
       updateAltPriceSummary();
       loadAssetConfig(assetSel.value);
     });
   }
-  const denomSel = document.getElementById('denomSelect');
+  
   if(denomSel){
     denomSel.addEventListener('change', () => {
       updateDenomLabels(denomSel.value);
-      autoFetchDenomPrice();
+      // Fix ReferenceError: call autoFetchPrices instead of autoFetchDenomPrice
+      const currentAsset = assetSel ? assetSel.value : '';
+      autoFetchPrices(currentAsset, denomSel.value); 
     });
   }
   
-  // Set initial denom label and fetch its price
+  // Set initial denom label
   updateDenomLabels(denomSel ? denomSel.value : 'BTC');
-  autoFetchDenomPrice();
+  
+  // Fix ReferenceError: Initial fetch
+  // We can just fetch the denom price initially if no asset is selected yet.
+  if(denomSel) {
+     autoFetchPrices('', denomSel.value);
+  }
 
-  // Add event listeners for manual input changes to update derived price
   const p0El = document.getElementById('p0');
   const denomUsdEl = document.getElementById('denomUsd');
   if(p0El){
