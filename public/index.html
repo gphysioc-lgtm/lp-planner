@@ -199,7 +199,11 @@
          </div>
          <div class="chk-row">
             <input type="checkbox" id="jlpStrategyMode">
-            <label for="jlpStrategyMode" style="margin:0; font-size:12px; color:var(--accent); font-weight:600;">JLP Strategy Mode</label>
+            <label for="jlpStrategyMode" style="margin:0; font-size:12px; color:var(--accent); font-weight:600;">JLP Mode (Hedged)</label>
+         </div>
+         <div class="chk-row">
+            <input type="checkbox" id="quadLpMode">
+            <label for="quadLpMode" style="margin:0; font-size:12px; color:#e08aff; font-weight:600;">Quad Split (25% Each)</label>
          </div>
       </div>
     </div>
@@ -785,57 +789,148 @@ function generate() {
   
   const isDual = document.getElementById('dualLpMode').checked;
   const isJlpMode = document.getElementById('jlpStrategyMode').checked;
+  const isQuadMode = document.getElementById('quadLpMode').checked;
 
   const strategies = [];
 
-  // ---------------------------------------------------------
-  // MODE: JLP STRATEGY (SOL Hedged)
-  // ---------------------------------------------------------
-  if (isJlpMode) {
-    // We treat the inputs as "USD-equivalent settings for SOL".
-    // 1. Calculate USD inputs
+  // =======================================================================
+  // MODE: QUAD SPLIT (4 Ways: SOL/USD, SOL/BTC, JLP/USD, SOL/JLP)
+  // =======================================================================
+  if (isQuadMode) {
+     // A. Reference: Single SOL/USD Strategy
+     // We treat the inputs as pure USD inputs for visualization
+     const solPminUsd = pmin * denomUsd;
+     const solPmaxUsd = pmax * denomUsd;
+     const solP0Usd   = p0   * denomUsd;
+     const totalUsdPort = portfolioSize * denomUsd;
+     const totalUsdCurE = currentE * denomUsd;
+
+     strategies.push({
+      title: `Reference: Single ${assetSymbol}/USD LP (100% Allocation)`,
+      id: 'ref',
+      params: {
+        pmin: solPminUsd, pmax: solPmaxUsd, p0: solP0Usd, stepPct,
+        portfolioSize: totalUsdPort,
+        currentE: totalUsdCurE,
+        targetMinPct, targetMaxPct,
+        denomSymbol: 'USD', denomUsd: 1, assetSymbol: assetSymbol,
+        scaleMode: document.getElementById('scaleMode').value,
+        aprPct: Number(document.getElementById('aprPct').value),
+        maxDays: Number(document.getElementById('maxDays').value)
+      }
+    });
+
+    // B. The 4 Splits (25% Capital Each)
+    const quarterPortUsd = totalUsdPort * 0.25;
+    const quarterCurrUsd = totalUsdCurE * 0.25;
+
+    // 1. SOL/USD (25%)
+    strategies.push({
+      title: `1. ${assetSymbol} / USD (25% Cap)`,
+      id: 'q1',
+      params: {
+        pmin: solPminUsd, pmax: solPmaxUsd, p0: solP0Usd, stepPct,
+        portfolioSize: quarterPortUsd,
+        currentE: quarterCurrUsd,
+        targetMinPct, targetMaxPct,
+        denomSymbol: 'USD', denomUsd: 1, assetSymbol: assetSymbol,
+        scaleMode: document.getElementById('scaleMode').value,
+        aprPct: Number(document.getElementById('aprPct').value),
+        maxDays: Number(document.getElementById('maxDays').value)
+      }
+    });
+
+    // 2. SOL/BTC (25%) - Converted back to BTC terms
+    // pmin/pmax inputs are ALREADY in BTC terms!
+    strategies.push({
+      title: `2. ${assetSymbol} / ${denomSymbol} (25% Cap)`,
+      id: 'q2',
+      params: {
+        pmin: pmin, pmax: pmax, p0: p0, stepPct,
+        portfolioSize: portfolioSize * 0.25, // BTC
+        currentE: currentE * 0.25, // BTC
+        targetMinPct, targetMaxPct,
+        denomSymbol: denomSymbol, denomUsd: denomUsd, assetSymbol: assetSymbol,
+        scaleMode: document.getElementById('scaleMode').value,
+        aprPct: Number(document.getElementById('aprPct').value),
+        maxDays: Number(document.getElementById('maxDays').value)
+      }
+    });
+
+    // 3. JLP/USDC (25%) - Dampened + 2x Target
+    // Fallback logic for JLP Price
+    const jlpInputVal = Number(document.getElementById('jlpUsd').value);
+    const jlpUsdLive = (jlpInputVal > 0) ? jlpInputVal : (solP0Usd * 0.5); 
+    if(jlpInputVal <= 0 && jlpUsdLive > 0) document.getElementById('jlpUsd').value = jlpUsdLive.toFixed(3);
+    
+    const getJlpPrice = (solPrice) => jlpUsdLive * (0.5 * (solPrice / solP0Usd) + 0.5);
+    const jlpPmin = getJlpPrice(solPminUsd);
+    const jlpPmax = getJlpPrice(solPmaxUsd);
+    const jlpP0   = jlpUsdLive;
+
+    strategies.push({
+      title: `3. JLP / USDC (25% Cap, Dampened Range, 2x Exposure)`,
+      id: 'q3',
+      params: {
+        pmin: jlpPmin, pmax: jlpPmax, p0: jlpP0, stepPct,
+        portfolioSize: quarterPortUsd,
+        currentE: quarterCurrUsd,
+        targetMinPct: targetMinPct * 2, // 2x Scaling
+        targetMaxPct: targetMaxPct * 2,
+        denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP',
+        scaleMode: document.getElementById('scaleMode').value,
+        aprPct: Number(document.getElementById('aprPct').value),
+        maxDays: Number(document.getElementById('maxDays').value)
+      }
+    });
+
+    // 4. SOL/JLP (25%) - Ratio + 2x Target
+    const ratioPmin = solPminUsd / getJlpPrice(solPminUsd);
+    const ratioPmax = solPmaxUsd / getJlpPrice(solPmaxUsd);
+    const ratioP0   = solP0Usd / jlpUsdLive;
+
+    strategies.push({
+      title: `4. ${assetSymbol} / JLP (25% Cap, Ratio Range, 2x Exposure)`,
+      id: 'q4',
+      params: {
+        pmin: ratioPmin, pmax: ratioPmax, p0: ratioP0, stepPct,
+        portfolioSize: quarterPortUsd / jlpUsdLive, // JLP Terms
+        currentE: quarterCurrUsd / jlpUsdLive,
+        targetMinPct: targetMinPct * 2, 
+        targetMaxPct: targetMaxPct * 2,
+        denomSymbol: 'JLP', denomUsd: jlpUsdLive, assetSymbol: assetSymbol,
+        scaleMode: document.getElementById('scaleMode').value,
+        aprPct: Number(document.getElementById('aprPct').value),
+        maxDays: Number(document.getElementById('maxDays').value)
+      }
+    });
+
+  } 
+  // =======================================================================
+  // MODE: JLP STRATEGY (SOL Hedged) - OLD
+  // =======================================================================
+  else if (isJlpMode) {
+    // ... Existing JLP Logic ...
+    // Copy-paste existing logic here for safety
     const solPminUsd = pmin * denomUsd;
     const solPmaxUsd = pmax * denomUsd;
     const solP0Usd   = p0   * denomUsd;
-    
-    // 2. Fetch JLP Pricing
-    // Fallback logic: if JLP USD input is 0, estimate it from SOL/2.
     const jlpInputVal = Number(document.getElementById('jlpUsd').value);
     const jlpUsdLive = (jlpInputVal > 0) ? jlpInputVal : (solP0Usd * 0.5); 
-    
-    // If we had to estimate, update the input for visibility
     if(jlpInputVal <= 0 && jlpUsdLive > 0) document.getElementById('jlpUsd').value = jlpUsdLive.toFixed(3);
-
-    // 3. Define the JLP Price Function
-    // FIX: Use 50/50 Weight model, not Unit model.
-    // J(S) = J0 * (0.5 * (S / S0) + 0.5)
     const getJlpPrice = (solPrice) => {
        if(solP0Usd <= 0) return 0;
        return jlpUsdLive * (0.5 * (solPrice / solP0Usd) + 0.5);
     };
-    
-    // 4. Calculate Derived Ranges for Pools
-    
-    // --- POOL A: JLP / USDC ---
-    // User buys JLP as it drops. Range based on SOL drop.
     const jlpPmin = getJlpPrice(solPminUsd);
     const jlpPmax = getJlpPrice(solPmaxUsd);
     const jlpP0   = jlpUsdLive;
-    
-    // --- POOL B: SOL / JLP ---
-    // User buys SOL as ratio drops.
     const ratioPmin = solPminUsd / getJlpPrice(solPminUsd);
     const ratioPmax = solPmaxUsd / getJlpPrice(solPmaxUsd);
     const ratioP0   = solP0Usd / jlpUsdLive;
-    
-    // 5. Capital Split (50/50 USD Value)
     const usdPortfolio = (portfolioSize * denomUsd);
     const usdCurrentE  = (currentE * denomUsd); 
 
-    // Strategy A: JLP / USDC
-    // IMPORTANT: Target Exposure Scaling.
-    // JLP has 0.5 beta to SOL. To get equivalent SOL notional exposure using JLP, 
-    // we need 2x the notional exposure in JLP terms.
     strategies.push({
       title: `JLP Strategy A: JLP / USDC (Targets scaled 2x for SOL Exposure)`,
       id: 'jlp1',
@@ -857,9 +952,9 @@ function generate() {
       id: 'jlp2',
       params: {
         pmin: ratioPmin, pmax: ratioPmax, p0: ratioP0, stepPct,
-        portfolioSize: (usdPortfolio * 0.5) / jlpUsdLive, // Capital in Denom terms (JLP)
+        portfolioSize: (usdPortfolio * 0.5) / jlpUsdLive,
         currentE: (usdCurrentE * 0.5) / jlpUsdLive,
-        targetMinPct: targetMinPct * 2, // Scaled for JLP2 as well
+        targetMinPct: targetMinPct * 2, 
         targetMaxPct: targetMaxPct * 2,
         denomSymbol: 'JLP', denomUsd: jlpUsdLive, assetSymbol: 'SOL',
         scaleMode: document.getElementById('scaleMode').value,
@@ -926,7 +1021,7 @@ function generate() {
   });
   
   // Update Global Targets Visuals
-  const capitalRatio = isDual || isJlpMode ? 0.5 : 1.0;
+  const capitalRatio = (isDual || isJlpMode) ? 0.5 : (isQuadMode ? 0.25 : 1.0);
   const tMinEl = document.getElementById('targetMin');
   const tMaxEl = document.getElementById('targetMax');
   const tMinVal = (portfolioSize * capitalRatio) * targetMinPct / 100;
@@ -960,13 +1055,14 @@ document.getElementById('btnClear').addEventListener('click', () => {
   const p0El = document.getElementById('p0');
   const denomUsdEl = document.getElementById('denomUsd');
   
-  // Handlers for checkboxes to ensure mutual exclusivity if desired (optional)
-  document.getElementById('dualLpMode').addEventListener('change', function(){
-    if(this.checked) document.getElementById('jlpStrategyMode').checked = false;
-  });
-  document.getElementById('jlpStrategyMode').addEventListener('change', function(){
-    if(this.checked) document.getElementById('dualLpMode').checked = false;
-  });
+  const dual = document.getElementById('dualLpMode');
+  const jlp = document.getElementById('jlpStrategyMode');
+  const quad = document.getElementById('quadLpMode');
+  
+  // Mutual exclusion
+  dual.addEventListener('change', function(){ if(this.checked) { jlp.checked=false; quad.checked=false; } });
+  jlp.addEventListener('change', function(){ if(this.checked) { dual.checked=false; quad.checked=false; } });
+  quad.addEventListener('change', function(){ if(this.checked) { dual.checked=false; jlp.checked=false; } });
 
   if (assetSel) {
     assetSel.addEventListener('change', () => {
