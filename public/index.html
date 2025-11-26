@@ -107,6 +107,7 @@
     margin: 24px 0 12px; font-size: 16px; font-weight: 700; color: var(--accent);
     display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #17202d; padding-bottom: 8px;
   }
+  .sub-col { font-size: 10px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -673,7 +674,7 @@ function calculateStrategy(params, manualBands) {
 }
 
 // --------------------------------------------------------------------------
-// NEW: Quad LP Breakdown Renderer
+// NEW: Quad LP Breakdown Renderer (Boundary Focus)
 // --------------------------------------------------------------------------
 function renderQuadAggregateTable(container, strategies) {
   const ref = strategies[0]; // Ref
@@ -685,14 +686,35 @@ function renderQuadAggregateTable(container, strategies) {
   // We assume alignment by index
   if(refRows.length === 0) return;
 
+  // Prices
+  const btcPrice = strategies[2].params.denomUsd || 1; 
+  const jlpUsd = strategies[4].params.denomUsd || 1; 
+  const p0 = Number(document.getElementById('p0').value) || 0;
+  const solPriceUsd = p0 * btcPrice; // Estimate
+
+  // Find boundary row indices
+  // We want the Last 'Below' and First 'Above'
+  let lastBelowIdx = -1;
+  for(let i=0; i<refRows.length; i++) {
+    if(refRows[i].type === 'Below') lastBelowIdx = i;
+    else break;
+  }
+  
+  const indicesToShow = [];
+  if(lastBelowIdx >= 0) indicesToShow.push(lastBelowIdx);
+  if(lastBelowIdx + 1 < refRows.length) indicesToShow.push(lastBelowIdx + 1);
+
+  const strategiesList = [strategies[1], strategies[2], strategies[3], strategies[4]];
+  
   const html = `
     <div class="section-header" style="color:#e08aff; border-bottom-color:#e08aff;">
-      Quad LP Breakdown: Per-Band Allocation Check
+      Quad LP Breakdown: Boundary Composition Check
     </div>
     <div class="card" style="margin-top:10px;">
       <div class="footnote" style="margin-bottom:8px; color:var(--muted);">
-        Breakdown of how the 4 split LPs (25% capital each) sum up to match the Reference (100% capital).<br>
-        Values shown are the required contribution (in USD or SOL) from each LP to match the target sum.
+        Breakdown for the rows immediately surrounding current price.<br>
+        <b>Dep:</b> Deployed Value in Asset Terms (e.g. JLP units).<br>
+        <b>Eff:</b> Effective Exposure in Reference Terms (USD or SOL). JLP = 50% dampened.
       </div>
       <div class="scroll">
         <table>
@@ -701,53 +723,97 @@ function renderQuadAggregateTable(container, strategies) {
               <th>Band</th>
               <th>Type</th>
               <th>Target (Ref)</th>
-              <th>Q1 (SOL/USD) Value</th>
-              <th>Q2 (SOL/BTC) Value</th>
-              <th>Q3 (JLP/USDC) Value</th>
-              <th>Q4 (SOL/JLP) Value</th>
-              <th>Actual Sum</th>
+              <th colspan="2" style="text-align:center; border-left:1px solid #333;">Q1 (SOL/USD)</th>
+              <th colspan="2" style="text-align:center; border-left:1px solid #333;">Q2 (SOL/BTC)</th>
+              <th colspan="2" style="text-align:center; border-left:1px solid #333;">Q3 (JLP/USDC)</th>
+              <th colspan="2" style="text-align:center; border-left:1px solid #333;">Q4 (SOL/JLP)</th>
+              <th style="border-left:1px solid #333;">Actual Sum (Eff)</th>
               <th>Diff</th>
+            </tr>
+            <tr>
+              <th></th><th></th><th></th>
+              <!-- Subheaders -->
+              <th class="sub-col" style="border-left:1px solid #333;">Dep (USD)</th><th class="sub-col">Eff</th>
+              <th class="sub-col" style="border-left:1px solid #333;">Dep (BTC)</th><th class="sub-col">Eff (USD)</th>
+              <th class="sub-col" style="border-left:1px solid #333;">Dep (USDC/JLP)</th><th class="sub-col">Eff</th>
+              <th class="sub-col" style="border-left:1px solid #333;">Dep (JLP/SOL)</th><th class="sub-col">Eff</th>
+              <th style="border-left:1px solid #333;"></th><th></th>
             </tr>
           </thead>
           <tbody>
-            ${refRows.map((r, i) => {
+            ${indicesToShow.map((idx) => {
+               const r = refRows[idx];
+               const r1 = getRows(strategiesList[0])[idx] || {};
+               const r2 = getRows(strategiesList[1])[idx] || {};
+               const r3 = getRows(strategiesList[2])[idx] || {};
+               const r4 = getRows(strategiesList[3])[idx] || {};
                
                let targetVal = 0;
                let unit = '';
+               
+               // Values
+               let d1=0, e1=0;
+               let d2=0, e2=0;
+               let d3=0, e3=0;
+               let d4=0, e4=0;
 
                if(r.type === 'Below') {
                  // Target: USD Amount
                  targetVal = r.deployUSD; 
                  unit = 'USD';
+                 
+                 // Q1: USD -> 100%
+                 d1 = r1.deployUSD || 0; e1 = d1;
+                 
+                 // Q2: BTC -> 100% (BTC as USD)
+                 d2 = r2.deployUSD || 0; e2 = d2 * btcPrice;
+                 
+                 // Q3: USDC -> 100%
+                 d3 = r3.deployUSD || 0; e3 = d3;
+                 
+                 // Q4: JLP -> 50% Effective USD
+                 d4 = r4.deployUSD || 0; // Units of JLP
+                 const valJlp = d4 * jlpUsd;
+                 e4 = valJlp * 0.5; 
+                 
                } else {
-                 // Target: SOL Amount (Inventory)
+                 // Target: SOL Amount
                  targetVal = r.altUnitsAbove;
                  unit = 'SOL';
+                 
+                 // Q1: SOL -> 100%
+                 d1 = r1.altUnitsAbove || 0; e1 = d1;
+                 
+                 // Q2: SOL -> 100%
+                 d2 = r2.altUnitsAbove || 0; e2 = d2;
+                 
+                 // Q3: JLP -> 50% Effective SOL
+                 d3 = r3.altUnitsAbove || 0; // Units of JLP
+                 if(solPriceUsd > 0) {
+                    const valJlp = d3 * jlpUsd;
+                    e3 = (valJlp * 0.5) / solPriceUsd; // Implied SOL
+                 }
+                 
+                 // Q4: SOL -> 100%
+                 d4 = r4.altUnitsAbove || 0; e4 = d4;
                }
                
-               // Calculate Equal Distribution (25% of Target per Pool)
-               // This forces alignment for the breakdown view as requested
-               const v1 = targetVal * 0.25;
-               const v2 = targetVal * 0.25;
-               const v3 = targetVal * 0.25;
-               const v4 = targetVal * 0.25;
-               
-               const sumVal = v1 + v2 + v3 + v4;
+               const sumVal = e1 + e2 + e3 + e4;
                const diff = sumVal - targetVal;
                const diffPct = (targetVal > 0) ? (diff / targetVal * 100) : 0;
-               
-               if((document.getElementById('showZeros').value!=='show') && (targetVal < 1e-9)) return '';
 
                return `<tr>
                  <td style="text-align:left">${r.bandIdx}</td>
                  <td>${r.type}</td>
-                 <td style="font-weight:bold; color:var(--accent);">${fmt(targetVal, 4)} ${unit}</td>
-                 <td style="color:#888;">${fmt(v1, 4)}</td>
-                 <td style="color:#888;">${fmt(v2, 4)}</td>
-                 <td style="color:#888;">${fmt(v3, 4)}</td>
-                 <td style="color:#888;">${fmt(v4, 4)}</td>
-                 <td style="font-weight:bold;">${fmt(sumVal, 4)} ${unit}</td>
-                 <td style="color:${Math.abs(diffPct)>0.1?'var(--bad)':'var(--good)'}; font-size:11px;">
+                 <td style="font-weight:bold; color:var(--accent);">${fmt(targetVal, 2)} ${unit}</td>
+                 
+                 <td style="border-left:1px solid #333;">${fmt(d1, 2)}</td><td style="color:#aaa;">${fmt(e1, 2)}</td>
+                 <td style="border-left:1px solid #333;">${fmt(d2, 4)}</td><td style="color:#aaa;">${fmt(e2, 2)}</td>
+                 <td style="border-left:1px solid #333;">${fmt(d3, 2)}</td><td style="color:#aaa;">${fmt(e3, 2)}</td>
+                 <td style="border-left:1px solid #333;">${fmt(d4, 2)}</td><td style="color:#aaa;">${fmt(e4, 2)}</td>
+                 
+                 <td style="font-weight:bold; border-left:1px solid #333;">${fmt(sumVal, 2)} ${unit}</td>
+                 <td style="color:${Math.abs(diffPct)>5?'var(--bad)':'var(--good)'}; font-size:11px;">
                    ${diff>0?'+':''}${fmt(diff, 2)} (${fmt(diffPct, 1)}%)
                  </td>
                </tr>`;
