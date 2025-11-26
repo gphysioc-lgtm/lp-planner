@@ -7,7 +7,8 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Server config error: Missing Cloudflare Access credentials.' });
   }
 
-  const url = 'https://das.portfoliodashboard.xyz/positions/exposure';
+  // FIXED URL: Corrected to match your screenshot
+  const url = 'https://das.portfoliodashboard.xyz/positions/exposures-api';
 
   try {
     // 2. Call the external API
@@ -21,7 +22,10 @@ export default async function handler(req, res) {
     });
 
     if (!response.ok) {
-      throw new Error(`External API error: ${response.status} ${response.statusText}`);
+      // Log the actual status text for debugging
+      const errorText = await response.text();
+      console.error(`External API Error (${response.status}):`, errorText);
+      throw new Error(`External API returned ${response.status}: ${response.statusText}`);
     }
 
     const data = await response.json();
