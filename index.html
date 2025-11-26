@@ -33,7 +33,6 @@
   input[type=number], select {
     width:100%; padding:8px 10px; border:1px solid #233142;
     border-radius:10px; background:#0c121a; color:var(--ink); outline:none;
-    /* Disable default number arrows */
     -webkit-appearance: none;
     -moz-appearance: textfield;
   }
@@ -106,7 +105,7 @@
     <div class="card">
       <h2>Inputs
         <span class="pill" style="float:right; background:var(--good); border-color:#1c693b;">
-          Data from Live Google Sheet & CoinGecko
+          Live Sheets & CoinGecko Prices
         </span>
       </h2>
 
@@ -129,7 +128,7 @@
           </select>
         </div>
         <div>
-          <label><span class="denomLabelShort">BTC</span> price (<span class="denomLabelShort">BTC</span>/USD) - Auto-Fetched from CoinGecko</label>
+          <label><span class="denomLabelShort">BTC</span> price (<span class="denomLabelShort">BTC</span>/USD) - Auto-Fetched</label>
           <input type="number" id="denomUsd" step="0.01" value="60000">
         </div>
       </div>
@@ -149,7 +148,9 @@
           <input type="number" id="pmax" step="0.00000001" value="0.00035000">
         </div>
         <div>
-          <label>Current Price (P₀, ALT/denom)</label>
+          <label>Current Price (P₀, ALT/denom)
+             <span style="color:var(--good); font-weight:bold; margin-left:4px;" id="p0LiveTag"></span>
+          </label>
           <input type="number" id="p0" step="0.00000001" value="0.00020800">
         </div>
       </div>
@@ -435,10 +436,27 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 // --- START: GOOGLE APPS SCRIPT URL ---
-// This is the live Web app URL you provided for fetching sheet data.
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzqG0z2v6nZZZpuhGVYHR28R71jpKl4psheB3bsMQ1bj2Hc4-590l-7Xgj8LUG6cFryMw/exec';
 // --- END: GOOGLE APPS SCRIPT URL ---
 
+// Expanded CoinGecko ID map
+const COINGECKO_IDS = {
+  BTC: 'bitcoin',
+  ETH: 'ethereum',
+  SOL: 'solana',
+  BNB: 'binancecoin',
+  ARB: 'arbitrum',
+  OP:  'optimism',
+  TIA: 'celestia',
+  MATIC: 'matic-network',
+  LINK: 'chainlink',
+  AVAX: 'avalanche-2',
+  DOGE: 'dogecoin',
+  ADA: 'cardano',
+  XRP: 'ripple',
+  LDO: 'lido-dao',
+  UNI: 'uniswap'
+};
 
 function fmt(x, d){
   if(!isFinite(x)) return '–';
@@ -501,88 +519,66 @@ function updateAltPriceSummary(){
                     ' ≈ ' + fmt(altUsd, 4) + ' USD';
 }
 
-const DENOM_PRICE_IDS = {
-  BTC: 'bitcoin',
-  ETH: 'ethereum',
-  SOL: 'solana',
-  BNB: 'binancecoin'
-};
+// Fetch current prices for BOTH Asset and Denom, then calculate P0
+async function autoFetchPrices(assetSym, denomSym){
+  const p0LiveTag = document.getElementById('p0LiveTag');
+  if(p0LiveTag) p0LiveTag.textContent = '';
 
-/**
- * Fetches the current USD price for the selected denomination asset from CoinGecko.
- */
-async function autoFetchDenomPrice(){
-  const denomSel = document.getElementById('denomSelect');
-  const denomUsdEl = document.getElementById('denomUsd');
-  if(!denomSel || !denomUsdEl) return;
-  const sym = (denomSel.value || '').toUpperCase();
-  const id = DENOM_PRICE_IDS[sym];
-  const statusEl = document.getElementById('altPriceSummary');
-  if(!id){
-    updateAltPriceSummary();
+  const assetId = COINGECKO_IDS[(assetSym || '').toUpperCase()];
+  const denomId = COINGECKO_IDS[(denomSym || '').toUpperCase()];
+
+  if(!denomId){
+    console.log('No denom ID found for auto-fetch');
     return;
   }
-  
-  const originalStatus = statusEl.textContent;
-  try{
-    if(statusEl){
-      statusEl.textContent = 'Fetching ' + sym + '/USD…';
-    }
+
+  // We always need denom price
+  let idsToFetch = denomId;
+  if(assetId) idsToFetch += ',' + assetId;
+
+  try {
     const url = 'https://api.coingecko.com/api/v3/simple/price?ids=' +
-                encodeURIComponent(id) + '&vs_currencies=usd';
+                encodeURIComponent(idsToFetch) + '&vs_currencies=usd';
     
-    // Implement exponential backoff for API call
-    let price = null;
-    const MAX_RETRIES = 3;
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      try {
-        const res = await fetch(url);
-        if (res.status === 429) {
-          if (attempt < MAX_RETRIES - 1) {
-            const delay = Math.pow(2, attempt) * 1000;
-            await new Promise(resolve => setTimeout(resolve, delay));
-            continue; // Retry
-          } else {
-            throw new Error('Rate limit exceeded after retries.');
-          }
-        }
-        if(!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        price = data[id]?.usd;
-        break; // Success
-      } catch (e) {
-        if (attempt === MAX_RETRIES - 1) throw e;
-        const delay = Math.pow(2, attempt) * 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+
+    const denomPriceUsd = data[denomId]?.usd;
+    
+    // 1. Update Denom Price
+    if(denomPriceUsd){
+      const denomUsdEl = document.getElementById('denomUsd');
+      if(denomUsdEl) denomUsdEl.value = denomPriceUsd;
+    }
+
+    // 2. Calculate P0 if possible
+    if(assetId && data[assetId]?.usd && denomPriceUsd){
+      const assetPriceUsd = data[assetId].usd;
+      const derivedP0 = assetPriceUsd / denomPriceUsd;
+      
+      const p0El = document.getElementById('p0');
+      if(p0El){
+        p0El.value = derivedP0.toFixed(8);
+        if(p0LiveTag) p0LiveTag.textContent = '(Live)';
+        console.log(`Auto-calculated P0 for ${assetSym}/${denomSym}: ${derivedP0}`);
       }
     }
 
-    if(typeof price === 'number' && isFinite(price)){
-      denomUsdEl.value = price;
-      updateAltPriceSummary();
-    }else if(statusEl){
-      statusEl.textContent = 'Unable to auto-fetch ' + sym + '/USD; please enter manually.';
-      // Revert if success message is short-lived
-      setTimeout(() => updateAltPriceSummary(), 3000);
-    }
-  }catch(err){
-    console.error('Error auto-fetching denom price', err);
-    if(statusEl){
-      statusEl.textContent = 'Unable to auto-fetch ' + sym + '/USD; please enter manually.';
-      setTimeout(() => updateAltPriceSummary(), 3000);
-    }
+    updateAltPriceSummary();
+    // Re-run generation with new prices
+    generate();
+
+  } catch(err){
+    console.error('Error fetching prices:', err);
   }
 }
 
-/**
- * Reads asset list from Google Apps Script endpoint
- * and populates the asset selection dropdown.
- */
 async function loadAssetList(){
   const sel = document.getElementById('assetSelect');
   const statusEl = document.getElementById('sheetStatus');
-  if(!sel || !statusEl || APPS_SCRIPT_URL === 'YOUR_APPS_SCRIPT_WEB_APP_URL') {
-    statusEl.innerHTML = '<span style="color:var(--bad)">ERROR:</span> Please ensure you have deployed your Apps Script and the APPS_SCRIPT_URL is correctly set.';
+  if(!sel || !statusEl || APPS_SCRIPT_URL.includes('YOUR_APPS_SCRIPT')) {
+    statusEl.innerHTML = '<span style="color:var(--bad)">ERROR:</span> Check APPS_SCRIPT_URL.';
     return;
   }
 
@@ -600,7 +596,7 @@ async function loadAssetList(){
     
     if(data.assets && Array.isArray(data.assets)){
       data.assets.forEach(sym => {
-        if(sym && sym.trim() !== ''){ // Ensure asset name is not empty
+        if(sym && sym.trim() !== ''){
           const opt = document.createElement('option');
           opt.value = sym;
           opt.textContent = sym;
@@ -613,14 +609,10 @@ async function loadAssetList(){
     }
   }catch(err){
     console.error('Error loading asset list', err);
-    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load asset list. Check Apps Script deployment and URL. (${err.message})`;
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load asset list. (${err.message})`;
   }
 }
 
-/**
- * Reads asset config from Google Apps Script endpoint
- * and populates the input fields.
- */
 async function loadAssetConfig(symbol){
   if(!symbol) return;
   
@@ -630,15 +622,14 @@ async function loadAssetConfig(symbol){
   try{
     const url = `${APPS_SCRIPT_URL}?symbol=${encodeURIComponent(symbol)}`;
     const res = await fetch(url);
-    
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
-    if(data.error){
-      throw new Error(data.error);
-    }
+    if(data.error) throw new Error(data.error);
 
-    // Apply data from the "Google Sheet"
+    // --- Fill Inputs from Sheet ---
+    // Note: We intentionally skip P0 from sheet if we are going to fetch it live,
+    // but we set it initially as a fallback.
     if(typeof data.pmin === 'number') document.getElementById('pmin').value = data.pmin;
     if(typeof data.pmax === 'number') document.getElementById('pmax').value = data.pmax;
     if(typeof data.p0   === 'number') document.getElementById('p0').value   = data.p0;
@@ -655,28 +646,27 @@ async function loadAssetConfig(symbol){
     if(typeof data.targetMaxPct === 'number')
       document.getElementById('targetMaxPct').value = data.targetMaxPct;
 
-    // The denomUsd price cannot be pulled from the sheet directly since it's auto-fetched from CoinGecko.
-    // However, if the sheet *did* contain a denom price, you could uncomment the next line:
-    // if(typeof data.denomUsd === 'number') document.getElementById('denomUsd').value = data.denomUsd;
-
+    let denomSym = 'BTC';
     if(data.denomAsset){
       const dSel = document.getElementById('denomSelect');
       if(dSel){
         dSel.value = data.denomAsset;
         updateDenomLabels(data.denomAsset);
+        denomSym = data.denomAsset;
       }
     }
     
-    // Auto-fetch price for the new denom asset from CoinGecko
-    await autoFetchDenomPrice();
-    // Update derived price (ALT/USD)
+    // --- AUTO PRICE FETCH ---
+    // This will override the sheet's P0 with the live calculation (Asset/Denom)
+    await autoFetchPrices(symbol, denomSym);
+
     updateAltPriceSummary();
-    // Re-generate the schedule immediately
     generate();
-    statusEl.textContent = `Config for ${symbol} loaded successfully.`;
+    statusEl.textContent = `Config for ${symbol} loaded. Prices auto-updated.`;
+
   }catch(err){
-    console.error('Error loading asset config or fetching price', err);
-    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol} config. (${err.message})`;
+    console.error('Error loading config', err);
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}. (${err.message})`;
   }
 }
 
@@ -690,7 +680,6 @@ function generate(){
 
   const denomSymbol = (document.getElementById('denomSelect')?.value || 'BTC').toUpperCase();
   const denomUsd = Number(document.getElementById('denomUsd')?.value || 0);
-  const denomDecimals = 6;
 
   updateDenomLabels(denomSymbol);
   updateAltPriceSummary();
@@ -708,14 +697,10 @@ function generate(){
   if (tMaxEl) tMaxEl.value = isFinite(targetMax) ? targetMax : 0;
 
   const currentE = Number(document.getElementById('currentE').value || 0);
-
-  const capRowsRaw = document.getElementById('capRows').value;
-  const capRows    = capRowsRaw ? parseInt(capRowsRaw, 10) : null;
+  const capRows = parseInt(document.getElementById('capRows').value || '0', 10) || null;
 
   if(!(pmin>0 && pmax>pmin && p0>0 && p0>=pmin && p0<=pmax)){
-    // Use custom notification instead of alert
-    console.error('Check prices: require 0 < Pmin ≤ P₀ ≤ Pmax and Pmax > Pmin (prices in ALT/denom).');
-    return;
+    return; // invalid inputs, just stop silently
   }
 
   const bands = buildBands(pmin,pmax,p0,stepPct);
