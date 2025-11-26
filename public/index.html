@@ -1150,19 +1150,33 @@ function generate() {
     }
   }
 
-  // 3. Calc & Render
+  // 3. Calc All First
   strategies.forEach(s => {
     try {
-      const data = calculateStrategy(s.params);
-      renderLPSection(container, s.title, data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id);
+      s.data = calculateStrategy(s.params);
     } catch(e) {
       console.error("Strategy Gen Error", e);
     }
   });
-  
-  // 4. Render Quad Aggregate (if active)
+
+  // 4. Render Logic based on Mode
   if (isQuadMode) {
-    renderQuadAggregateTable(container, strategies);
+     // Render Reference
+     renderLPSection(container, strategies[0].title, strategies[0].data, strategies[0].params.denomSymbol, strategies[0].params.denomUsd, strategies[0].params.assetSymbol, strategies[0].id);
+     
+     // Render Aggregate Table Immediately After
+     renderQuadAggregateTable(container, strategies);
+     
+     // Render Q1, Q2, Q3, Q4
+     for(let i=1; i<strategies.length; i++) {
+       const s = strategies[i];
+       renderLPSection(container, s.title, s.data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id);
+     }
+  } else {
+     // Standard Render Loop
+     strategies.forEach(s => {
+       renderLPSection(container, s.title, s.data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id);
+     });
   }
   
   // Update Global Targets Visuals
