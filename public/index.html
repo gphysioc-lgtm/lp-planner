@@ -437,7 +437,7 @@ async function fetchLiveExposure() {
     }
 
     if (found) {
-        // Try to get USD value
+        // Try to get USD value from likely fields
         const usdVal = Number(found.usdValue || found.amountUsd || found.positionUsd || found.exposureUsd || found.value || found.usd || 0);
         
         if (!isNaN(usdVal) && usdVal !== 0) {
