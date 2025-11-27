@@ -153,6 +153,7 @@
           <option value="ETH">ETH</option>
           <option value="SOL">SOL</option>
           <option value="BNB">BNB</option>
+          <option value="USD">USD</option>
         </select>
       </div>
       <div>
@@ -317,6 +318,7 @@ const COINGECKO_IDS = {
   LINK: 'chainlink', AVAX: 'avalanche-2', DOGE: 'dogecoin', ADA: 'cardano',
   XRP: 'ripple', LDO: 'lido-dao', UNI: 'uniswap', ASTER: 'aster-2',
   JLP: 'jupiter-perpetuals-liquidity-provider-token'
+  // New or unknown assets will fallback to using their symbol in lowercase
 };
 
 function fmt(x, d){
@@ -397,35 +399,26 @@ async function fetchLiveExposure() {
     
     const rawData = await res.json();
     
-    // Safe display in debug box (Truncated to 2000 chars to prevent freeze)
+    // Safe display in debug box
     const debugStr = JSON.stringify(rawData, null, 2);
     debugBox.textContent = debugStr.length > 2000 ? debugStr.substring(0, 2000) + "\n... (TRUNCATED)" : debugStr;
     
     // --- Robust Parsing Strategy ---
     let dataList = [];
-    // If it's an array, assume list of positions
     if (Array.isArray(rawData)) {
         dataList = rawData;
     } 
-    // If it's an object, check for wrapper keys
     else if (typeof rawData === 'object' && rawData !== null) {
-        // Check if the keys ARE the symbols (Dictionary/Map style)
-        // e.g. { "SOL": { amount: 100 }, "BTC": { amount: 2 } }
-        // We convert this to a list for easier searching
         const keys = Object.keys(rawData);
-        // Heuristic: If keys look like symbols, treat as map
         const looksLikeMap = keys.length > 0 && keys.every(k => k === k.toUpperCase() && k.length < 10);
         
         if (looksLikeMap) {
-             // Convert map to list: [{symbol: "SOL", ...data}]
              dataList = keys.map(k => ({ symbol: k, ...rawData[k] }));
         } 
-        // Otherwise check for standard wrappers
         else if (Array.isArray(rawData.data)) dataList = rawData.data;
         else if (Array.isArray(rawData.positions)) dataList = rawData.positions;
         else if (Array.isArray(rawData.result)) dataList = rawData.result;
         else {
-           // Maybe it's a single object? Treat as list of 1
            dataList = [rawData];
         }
     }
@@ -444,7 +437,7 @@ async function fetchLiveExposure() {
     }
 
     if (found) {
-        // Try to get USD value from likely fields
+        // Try to get USD value
         const usdVal = Number(found.usdValue || found.amountUsd || found.positionUsd || found.exposureUsd || found.value || found.usd || 0);
         
         if (!isNaN(usdVal) && usdVal !== 0) {
@@ -458,14 +451,11 @@ async function fetchLiveExposure() {
             statusEl.style.color = 'var(--warn)';
         }
     } else {
-        // Smart Debug: Show available keys/symbols to help user
-        let hint = "None";
+        let avail = "None";
         if (dataList.length > 0) {
-             // Try to grab something that looks like a symbol or key
              const sampleKeys = dataList.map(p => p.symbol || p.ticker || p.asset || Object.keys(p)[0] || '?');
              hint = sampleKeys.slice(0, 5).join(', ');
         }
-        
         statusEl.textContent = `No position found for ${assetSym}. (Keys: ${hint}...)`;
         statusEl.style.color = 'var(--muted)';
     }
@@ -489,17 +479,23 @@ async function autoFetchPrices(assetSym, denomSym){
   const p0LiveTag = document.getElementById('p0LiveTag');
   if(p0LiveTag) p0LiveTag.textContent = '';
 
-  const assetId = COINGECKO_IDS[(assetSym || '').toUpperCase()];
+  let assetId = COINGECKO_IDS[(assetSym || '').toUpperCase()];
+  // FALLBACK: If ID not found, try symbol in lowercase
+  if (!assetId && assetSym) {
+      assetId = assetSym.toLowerCase();
+  }
+
   const denomId = COINGECKO_IDS[(denomSym || '').toUpperCase()];
   const jlpId   = COINGECKO_IDS['JLP'];
+  const isUsd   = (denomSym || '').toUpperCase() === 'USD';
 
-  if(!denomId){
+  if(!denomId && !isUsd){
     return;
   }
 
-  let idsToFetch = denomId;
-  if(assetId) idsToFetch += ',' + assetId;
-  if(jlpId)   idsToFetch += ',' + jlpId;
+  let idsToFetch = isUsd ? '' : denomId;
+  if(assetId) idsToFetch += (idsToFetch ? ',' : '') + assetId;
+  if(jlpId)   idsToFetch += (idsToFetch ? ',' : '') + jlpId;
 
   try {
     if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
@@ -507,29 +503,45 @@ async function autoFetchPrices(assetSym, denomSym){
       if(sheetStatus) sheetStatus.innerHTML += ' <span style="color:var(--warn)">(Live prices require Vercel deployment)</span>';
       return;
     }
+    
+    if (!idsToFetch && isUsd) {
+        const denomUsdEl = document.getElementById('denomUsd');
+        if(denomUsdEl) denomUsdEl.value = 1;
+        triggerAutoFetch();
+        return;
+    }
 
     const url = `/api/price?ids=${encodeURIComponent(idsToFetch)}&vs_currencies=usd`;
     const res = await fetch(url);
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
 
-    const denomPriceUsd = data[denomId]?.usd;
-    
-    if(denomPriceUsd){
-      const denomUsdEl = document.getElementById('denomUsd');
-      if(denomUsdEl) {
-         denomUsdEl.value = denomPriceUsd;
-         triggerAutoFetch(); 
-      }
+    if (isUsd) {
+        const denomUsdEl = document.getElementById('denomUsd');
+        if(denomUsdEl) {
+            denomUsdEl.value = 1;
+            triggerAutoFetch();
+        }
+    } else {
+        const denomPriceUsd = data[denomId]?.usd;
+        if(denomPriceUsd){
+          const denomUsdEl = document.getElementById('denomUsd');
+          if(denomUsdEl) {
+             denomUsdEl.value = denomPriceUsd;
+             triggerAutoFetch(); 
+          }
+        }
     }
 
     if(jlpId && data[jlpId]?.usd){
        document.getElementById('jlpUsd').value = data[jlpId].usd;
     }
 
-    if(assetId && data[assetId]?.usd && denomPriceUsd){
+    const currentDenomUsd = isUsd ? 1 : (data[denomId]?.usd || 0);
+
+    if(assetId && data[assetId]?.usd && currentDenomUsd){
       const assetPriceUsd = data[assetId].usd;
-      const derivedP0 = assetPriceUsd / denomPriceUsd;
+      const derivedP0 = assetPriceUsd / currentDenomUsd;
       
       const p0El = document.getElementById('p0');
       if(p0El){
@@ -1056,9 +1068,6 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
   }
 }
 
-// --------------------------------------------------------------------------
-// Main Execution
-// --------------------------------------------------------------------------
 function generate() {
   const container = document.getElementById('resultsContainer');
   container.innerHTML = '';
@@ -1264,25 +1273,6 @@ function generate() {
   if (tMaxEl) tMaxEl.value = isFinite(tMaxVal) ? tMaxVal : 0;
 }
 
-// Global Copy Helper
-window.copyTable = function(lpId) {
-  const el = document.querySelector(`#section_${lpId} table`);
-  if(!el) return;
-  const range = document.createRange();
-  range.selectNode(el);
-  window.getSelection().removeAllRanges();
-  window.getSelection().addRange(range);
-  document.execCommand('copy');
-  window.getSelection().removeAllRanges();
-  alert('Table copied to clipboard');
-};
-
-document.getElementById('btn').addEventListener('click', generate);
-document.getElementById('btnClear').addEventListener('click', () => {
-  document.getElementById('resultsContainer').innerHTML = '';
-});
-
-// Init
 (function(){
   const assetSel = document.getElementById('assetSelect');
   const denomSel = document.getElementById('denomSelect');
