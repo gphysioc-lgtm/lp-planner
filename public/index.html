@@ -955,6 +955,7 @@ function renderTripleAggregateTable(container, strategies) {
 function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, assetSymbol, lpId) {
   if(!strategyData) return;
   const { rows, kpi, apr } = strategyData;
+  const dec = parseInt(document.getElementById('dec').value || '4', 10);
   
   const sectionHtml = `
     <div class="section-header">${title}</div>
@@ -1055,6 +1056,9 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
   }
 }
 
+// --------------------------------------------------------------------------
+// Main Execution
+// --------------------------------------------------------------------------
 function generate() {
   const container = document.getElementById('resultsContainer');
   container.innerHTML = '';
@@ -1078,55 +1082,115 @@ function generate() {
   const strategies = [];
 
   if (isTripleMode) {
-     const solPminUsd = pmin * denomUsd;
-     const solPmaxUsd = pmax * denomUsd;
-     const solP0Usd   = p0   * denomUsd;
-     const totalUsdPort = portfolioSize * denomUsd;
-     const totalUsdCurE = currentE * denomUsd;
+     try {
+        // A. Reference: Single SOL/USD Strategy
+        const solPminUsd = pmin * denomUsd;
+        const solPmaxUsd = pmax * denomUsd;
+        const solP0Usd   = p0   * denomUsd;
+        const totalUsdPort = portfolioSize * denomUsd;
+        const totalUsdCurE = currentE * denomUsd;
 
-     const refParams = {
-        pmin: solPminUsd, pmax: solPmaxUsd, p0: solP0Usd, stepPct,
-        portfolioSize: totalUsdPort,
-        currentE: totalUsdCurE,
-        targetMinPct, targetMaxPct,
-        denomSymbol: 'USD', denomUsd: 1, assetSymbol: assetSymbol,
-        scaleMode: document.getElementById('scaleMode').value,
-        aprPct: Number(document.getElementById('aprPct').value),
-        maxDays: Number(document.getElementById('maxDays').value)
-     };
-     const refData = calculateStrategy(refParams);
-     strategies.push({ title: `Reference: Single ${assetSymbol}/USD LP (100% Allocation)`, id: 'ref', params: refParams, data: refData });
+        const refParams = {
+            pmin: solPminUsd, pmax: solPmaxUsd, p0: solP0Usd, stepPct,
+            portfolioSize: totalUsdPort,
+            currentE: totalUsdCurE,
+            targetMinPct, targetMaxPct,
+            denomSymbol: 'USD', denomUsd: 1, assetSymbol: assetSymbol,
+            scaleMode: document.getElementById('scaleMode').value,
+            aprPct: Number(document.getElementById('aprPct').value),
+            maxDays: Number(document.getElementById('maxDays').value)
+        };
+        
+        const refData = calculateStrategy(refParams);
+        if (!refData) return; // STOP if ref calc fails
 
-     const jlpInputVal = Number(document.getElementById('jlpUsd').value);
-     const jlpUsdLive = (jlpInputVal > 0) ? jlpInputVal : (solP0Usd * 0.5); 
-     if(jlpInputVal <= 0 && jlpUsdLive > 0) document.getElementById('jlpUsd').value = jlpUsdLive.toFixed(3);
-     const getJlpPrice = (solPrice) => jlpUsdLive * (0.5 * (solPrice / solP0Usd) + 0.5);
+        strategies.push({
+          title: `Reference: Single ${assetSymbol}/USD LP (100% Allocation)`,
+          id: 'ref',
+          params: refParams,
+          data: refData
+        });
 
-     const refBands = refData.rawBands; 
-     const mapBandList = (list, fnMap) => list.map((b, i) => ({ pa: fnMap(b.pa), pb: fnMap(b.pb), type: b.type, origIdx: i + 1 }));
+        // JLP Price setup
+        const jlpInputVal = Number(document.getElementById('jlpUsd').value);
+        // Guard against p0=0 or denomUsd=0
+        const safeSolP0Usd = (solP0Usd > 0) ? solP0Usd : 1; 
+        const jlpUsdLive = (jlpInputVal > 0) ? jlpInputVal : (safeSolP0Usd * 0.5); 
+        
+        if(jlpInputVal <= 0 && jlpUsdLive > 0) document.getElementById('jlpUsd').value = jlpUsdLive.toFixed(3);
+        
+        const getJlpPrice = (solPrice) => {
+            if (solP0Usd <= 0) return 0; // Safety check
+            return jlpUsdLive * (0.5 * (solPrice / solP0Usd) + 0.5);
+        };
 
-     const bandsQ1 = { down: mapBandList(refBands.down, p => p), up: mapBandList(refBands.up, p => p) };
-     const bandsQ2 = { down: mapBandList(refBands.down, p => p / denomUsd), up: mapBandList(refBands.up, p => p / denomUsd) };
-     const bandsQ3 = { down: mapBandList(refBands.down, p => getJlpPrice(p)), up: mapBandList(refBands.up, p => getJlpPrice(p)) };
+        // Map Bands for Alignment
+        const refBands = refData.rawBands; 
+        if (!refBands || !refBands.down || !refBands.up) return; // Safety check
 
-     const capSplit = totalUsdPort / 3.0;
-     const curSplit = totalUsdCurE / 3.0;
+        const mapBandList = (list, fnMap) => list.map((b, i) => ({
+            pa: fnMap(b.pa),
+            pb: fnMap(b.pb),
+            type: b.type,
+            origIdx: i + 1
+        }));
 
-     strategies.push({ title: `1. ${assetSymbol} / USD (Equal Split)`, id: 'q1', params: { ...refParams, portfolioSize: capSplit, currentE: curSplit }, customBands: bandsQ1 });
-     strategies.push({ title: `2. ${assetSymbol} / ${denomSymbol} (Equal Split)`, id: 'q2', params: { pmin: pmin, pmax: pmax, p0: p0, stepPct, portfolioSize: portfolioSize / 3.0, currentE: currentE / 3.0, targetMinPct, targetMaxPct, denomSymbol: denomSymbol, denomUsd: denomUsd, assetSymbol: assetSymbol, scaleMode: document.getElementById('scaleMode').value, aprPct: Number(document.getElementById('aprPct').value), maxDays: Number(document.getElementById('maxDays').value) }, customBands: bandsQ2 });
-     strategies.push({
-       title: `3. JLP / USDC (Asymmetric Split)`, id: 'q3',
-       params: {
-         pmin: 0, pmax: 0, p0: 0, stepPct, 
-         portfolioSize: capSplit, currentE: curSplit,
-         targetMinPct: targetMinPct,     
-         targetMaxPct: targetMaxPct * 2, 
-         denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP',
-         scaleMode: document.getElementById('scaleMode').value, aprPct: Number(document.getElementById('aprPct').value), maxDays: Number(document.getElementById('maxDays').value)
-       },
-       customBands: bandsQ3
-     });
+        const bandsQ1 = { down: mapBandList(refBands.down, p => p), up: mapBandList(refBands.up, p => p) };
+        const bandsQ2 = { down: mapBandList(refBands.down, p => p / denomUsd), up: mapBandList(refBands.up, p => p / denomUsd) };
+        const bandsQ3 = { down: mapBandList(refBands.down, p => getJlpPrice(p)), up: mapBandList(refBands.up, p => getJlpPrice(p)) };
+
+        // Define Strategies (Q1-Q3)
+        const capSplit = totalUsdPort / 3.0;
+        const curSplit = totalUsdCurE / 3.0;
+
+        // Q1: SOL/USD
+        strategies.push({
+          title: `1. ${assetSymbol} / USD (Equal Split)`,
+          id: 'q1',
+          params: { ...refParams, portfolioSize: capSplit, currentE: curSplit },
+          customBands: bandsQ1
+        });
+        
+        // Q2: SOL/BTC
+        strategies.push({
+          title: `2. ${assetSymbol} / ${denomSymbol} (Equal Split)`,
+          id: 'q2',
+          params: {
+            pmin: pmin, pmax: pmax, p0: p0, stepPct, 
+            portfolioSize: portfolioSize / 3.0, 
+            currentE: currentE / 3.0,
+            targetMinPct, targetMaxPct,
+            denomSymbol: denomSymbol, denomUsd: denomUsd, assetSymbol: assetSymbol,
+            scaleMode: document.getElementById('scaleMode').value,
+            aprPct: Number(document.getElementById('aprPct').value),
+            maxDays: Number(document.getElementById('maxDays').value)
+          },
+          customBands: bandsQ2
+        });
+        
+        // Q3: JLP/USDC
+        strategies.push({
+          title: `3. JLP / USDC (Asymmetric Split)`,
+          id: 'q3',
+          params: {
+            pmin: 0, pmax: 0, p0: 0, stepPct, // ignored
+            portfolioSize: capSplit, 
+            currentE: curSplit,
+            targetMinPct: targetMinPct,     // 1x for Below (USD Capital)
+            targetMaxPct: targetMaxPct * 2, // 2x for Above (JLP Inventory)
+            denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP',
+            scaleMode: document.getElementById('scaleMode').value,
+            aprPct: Number(document.getElementById('aprPct').value),
+            maxDays: Number(document.getElementById('maxDays').value)
+          },
+          customBands: bandsQ3
+        });
+     } catch (err) {
+        console.error("Triple Mode Generation Error:", err);
+     }
+
   } else {
+     // Standard Modes
      const capitalRatio = isDual || isJlpMode ? 0.5 : 1.0;
      const baseParams = {
         pmin, pmax, p0, stepPct,
@@ -1138,6 +1202,7 @@ function generate() {
         aprPct: Number(document.getElementById('aprPct').value),
         maxDays: Number(document.getElementById('maxDays').value)
      };
+     
      if(isJlpMode) {
         const solPminUsd = pmin * denomUsd;
         const solPmaxUsd = pmax * denomUsd;
@@ -1153,6 +1218,7 @@ function generate() {
         const ratioP0 = solP0Usd / jlpUsdLive;
         const usdPortfolio = (portfolioSize * denomUsd);
         const usdCurrentE  = (currentE * denomUsd); 
+
         strategies.push({ title: `JLP Strategy A: JLP / USDC`, id: 'jlp1', params: { ...baseParams, pmin: jlpPmin, pmax: jlpPmax, p0: jlpP0, portfolioSize: usdPortfolio*0.5, currentE: usdCurrentE*0.5, targetMinPct: targetMinPct*2, targetMaxPct: targetMaxPct*2, denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP' } });
         strategies.push({ title: `JLP Strategy B: SOL / JLP`, id: 'jlp2', params: { ...baseParams, pmin: ratioPmin, pmax: ratioPmax, p0: ratioP0, portfolioSize: (usdPortfolio*0.5)/jlpUsdLive, currentE: (usdCurrentE*0.5)/jlpUsdLive, denomSymbol: 'JLP', denomUsd: jlpUsdLive, assetSymbol: assetSymbol, targetMinPct: targetMinPct*2, targetMaxPct: targetMaxPct*2 } });
      } else {
@@ -1175,11 +1241,13 @@ function generate() {
   });
 
   if (isTripleMode) {
-     renderLPSection(container, strategies[0].title, strategies[0].data, strategies[0].params.denomSymbol, strategies[0].params.denomUsd, strategies[0].params.assetSymbol, strategies[0].id);
-     renderTripleAggregateTable(container, strategies);
-     for(let i=1; i<strategies.length; i++) {
-       const s = strategies[i];
-       renderLPSection(container, s.title, s.data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id);
+     if (strategies.length > 0 && strategies[0].data) {
+         renderLPSection(container, strategies[0].title, strategies[0].data, strategies[0].params.denomSymbol, strategies[0].params.denomUsd, strategies[0].params.assetSymbol, strategies[0].id);
+         renderTripleAggregateTable(container, strategies);
+         for(let i=1; i<strategies.length; i++) {
+           const s = strategies[i];
+           renderLPSection(container, s.title, s.data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id);
+         }
      }
   } else {
      strategies.forEach(s => {
@@ -1196,6 +1264,25 @@ function generate() {
   if (tMaxEl) tMaxEl.value = isFinite(tMaxVal) ? tMaxVal : 0;
 }
 
+// Global Copy Helper
+window.copyTable = function(lpId) {
+  const el = document.querySelector(`#section_${lpId} table`);
+  if(!el) return;
+  const range = document.createRange();
+  range.selectNode(el);
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+  document.execCommand('copy');
+  window.getSelection().removeAllRanges();
+  alert('Table copied to clipboard');
+};
+
+document.getElementById('btn').addEventListener('click', generate);
+document.getElementById('btnClear').addEventListener('click', () => {
+  document.getElementById('resultsContainer').innerHTML = '';
+});
+
+// Init
 (function(){
   const assetSel = document.getElementById('assetSelect');
   const denomSel = document.getElementById('denomSelect');
