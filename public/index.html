@@ -403,11 +403,25 @@ async function fetchLiveExposure() {
     
     // --- Robust Parsing Strategy ---
     let dataList = [];
+    // If it's an array, assume list of positions
     if (Array.isArray(rawData)) {
         dataList = rawData;
-    } else if (typeof rawData === 'object' && rawData !== null) {
-        // Check for wrapped arrays like { data: [...] } or { positions: [...] }
-        if (Array.isArray(rawData.data)) dataList = rawData.data;
+    } 
+    // If it's an object, check for wrapper keys
+    else if (typeof rawData === 'object' && rawData !== null) {
+        // Check if the keys ARE the symbols (Dictionary/Map style)
+        // e.g. { "SOL": { amount: 100 }, "BTC": { amount: 2 } }
+        // We convert this to a list for easier searching
+        const keys = Object.keys(rawData);
+        // Heuristic: If keys look like symbols, treat as map
+        const looksLikeMap = keys.length > 0 && keys.every(k => k === k.toUpperCase() && k.length < 10);
+        
+        if (looksLikeMap) {
+             // Convert map to list: [{symbol: "SOL", ...data}]
+             dataList = keys.map(k => ({ symbol: k, ...rawData[k] }));
+        } 
+        // Otherwise check for standard wrappers
+        else if (Array.isArray(rawData.data)) dataList = rawData.data;
         else if (Array.isArray(rawData.positions)) dataList = rawData.positions;
         else if (Array.isArray(rawData.result)) dataList = rawData.result;
         else {
@@ -424,13 +438,14 @@ async function fetchLiveExposure() {
             const s1 = (p.symbol || '').toUpperCase();
             const s2 = (p.ticker || '').toUpperCase();
             const s3 = (p.asset || '').toUpperCase();
-            const s4 = (p.name || '').toUpperCase(); // Sometimes name implies ticker
+            const s4 = (p.name || '').toUpperCase(); 
             return s1 === searchSym || s2 === searchSym || s3 === searchSym || s4.includes(searchSym);
         });
     }
 
     if (found) {
-        const usdVal = Number(found.usdValue || found.amountUsd || found.positionUsd || found.exposureUsd || found.value || 0);
+        // Try to get USD value from likely fields
+        const usdVal = Number(found.usdValue || found.amountUsd || found.positionUsd || found.exposureUsd || found.value || found.usd || 0);
         
         if (!isNaN(usdVal) && usdVal !== 0) {
             const denomExposure = usdVal / denomUsd;
@@ -443,12 +458,15 @@ async function fetchLiveExposure() {
             statusEl.style.color = 'var(--warn)';
         }
     } else {
-        // Debug: Show first few available symbols
-        let avail = "None";
+        // Smart Debug: Show available keys/symbols to help user
+        let hint = "None";
         if (dataList.length > 0) {
-            avail = dataList.map(p => p.symbol || p.ticker || p.asset || '?').slice(0, 4).join(', ');
+             // Try to grab something that looks like a symbol or key
+             const sampleKeys = dataList.map(p => p.symbol || p.ticker || p.asset || Object.keys(p)[0] || '?');
+             hint = sampleKeys.slice(0, 5).join(', ');
         }
-        statusEl.textContent = `No position found for ${assetSym}. (Seen: ${avail}...)`;
+        
+        statusEl.textContent = `No position found for ${assetSym}. (Keys: ${hint}...)`;
         statusEl.style.color = 'var(--muted)';
     }
 
