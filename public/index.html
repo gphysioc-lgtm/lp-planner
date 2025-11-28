@@ -38,6 +38,7 @@
     -moz-appearance: textfield;
   }
   input[readonly] { background: var(--highlight); color: var(--accent); }
+  
   .chk-row { display:flex; align-items:center; gap:8px; margin-top:8px; }
   input[type=checkbox] { width:auto; transform:scale(1.2); cursor:pointer; }
   
@@ -190,7 +191,7 @@
         <label>Current Price P₀ (ALT/<span class="denomLabelShort">BTC</span>)
            <span style="color:var(--good); font-weight:bold; margin-left:4px;">(Calculated)</span>
         </label>
-        <input type="number" id="p0" step="0.00000001" value="0" readonly>
+        <input type="number" id="p0" step="0.00000001" value="0" style="background:#0c121a; color:var(--ink);">
       </div>
     </div>
 
@@ -310,8 +311,9 @@ const COINGECKO_IDS = {
   ARB: 'arbitrum', OP: 'optimism', TIA: 'celestia', MATIC: 'matic-network',
   LINK: 'chainlink', AVAX: 'avalanche-2', DOGE: 'dogecoin', ADA: 'cardano',
   XRP: 'ripple', LDO: 'lido-dao', UNI: 'uniswap', ASTER: 'aster-2',
-  JLP: 'jupiter-perpetuals-liquidity-provider-token'
-  // New or unknown assets will fallback to using their symbol in lowercase
+  JLP: 'jupiter-perpetuals-liquidity-provider-token',
+  XPL: 'plasma-xpl' 
+  // Added XPL explicit support
 };
 
 function fmt(x, d){
@@ -339,15 +341,32 @@ function updateDenomLabels(sym){
   document.querySelectorAll('.denomLabelShort').forEach(el => { el.textContent = s; });
 }
 
-// --- CALCULATION OF P0 FROM USD INPUTS ---
+// --- SYNC FUNCTIONS (Bi-Directional) ---
+
+// 1. Inputs (USD) -> Calculates Ratio (P0)
 function updateP0FromUsd() {
     const altUsd = Number(document.getElementById('altUsd').value || 0);
     const denomUsd = Number(document.getElementById('denomUsd').value || 0);
     const p0El = document.getElementById('p0');
     
+    // Only update P0 if we have valid inputs. 
+    // This prevents overwriting manual P0 with 0 if API failed.
     if(altUsd > 0 && denomUsd > 0) {
         const ratio = altUsd / denomUsd;
-        p0El.value = ratio.toFixed(8); // High precision for small ratios
+        // Use high precision for small ratios (like XPL/BTC)
+        p0El.value = ratio.toFixed(10); 
+    }
+}
+
+// 2. Input Ratio (P0) -> Calculates Alt USD
+function updateUsdFromP0() {
+    const p0 = Number(document.getElementById('p0').value || 0);
+    const denomUsd = Number(document.getElementById('denomUsd').value || 0);
+    const altUsdEl = document.getElementById('altUsd');
+    
+    if(p0 > 0 && denomUsd > 0) {
+        const val = p0 * denomUsd;
+        altUsdEl.value = val.toFixed(6);
     }
 }
 
@@ -521,7 +540,7 @@ async function autoFetchPrices(assetSym, denomSym){
        document.getElementById('jlpUsd').value = data[jlpId].usd;
     }
     
-    // 4. Update the Calculated P0 (Ratio)
+    // 4. Update the Calculated P0 (Ratio) - Only if Alt USD is non-zero
     updateP0FromUsd();
     
     // 5. Trigger exposure fetch & generate
@@ -587,8 +606,13 @@ async function loadAssetConfig(symbol){
 
     if(typeof data.pmin === 'number') document.getElementById('pmin').value = data.pmin;
     if(typeof data.pmax === 'number') document.getElementById('pmax').value = data.pmax;
-    // Note: We respect data.p0 if provided, but if the user changes USD inputs, it overrides.
-    // However, typically the sheet provides limits, not the live ratio.
+    
+    // SMART LOAD: If sheet has P0, fill it, AND fill the Alt USD box
+    if(typeof data.p0 === 'number') {
+        document.getElementById('p0').value = data.p0;
+        // Immediate back-calc to fix the "0" issue
+        updateUsdFromP0();
+    }
     
     if(typeof data.portfolioSize === 'number') document.getElementById('portfolioSize').value = data.portfolioSize;
     if(typeof data.targetMinPct === 'number') document.getElementById('targetMinPct').value = data.targetMinPct;
@@ -608,7 +632,6 @@ async function loadAssetConfig(symbol){
     
     fetchLiveExposure();
     
-    // updateAltPriceSummary(); // Removed as we now have explicit inputs
     generate();
     statusEl.textContent = `Config for ${symbol} loaded.`;
 
@@ -1275,6 +1298,7 @@ function generate() {
   const denomSel = document.getElementById('denomSelect');
   const altUsdEl = document.getElementById('altUsd');
   const denomUsdEl = document.getElementById('denomUsd');
+  const p0El = document.getElementById('p0');
   const dual = document.getElementById('dualLpMode');
   const jlp = document.getElementById('jlpStrategyMode');
   const triple = document.getElementById('tripleLpMode');
@@ -1293,9 +1317,12 @@ function generate() {
   jlp.addEventListener('change', function(){ if(this.checked) { dual.checked=false; triple.checked=false; } });
   triple.addEventListener('change', function(){ if(this.checked) { dual.checked=false; jlp.checked=false; } });
 
-  // Input Listeners for Auto-Calc
+  // Input Listeners for Auto-Calc (Bi-Directional)
   if(altUsdEl) altUsdEl.addEventListener('input', updateP0FromUsd);
   if(denomUsdEl) denomUsdEl.addEventListener('input', updateP0FromUsd);
+  
+  // ADDED: Listener for P0 -> USD (so manual P0 still works if desired)
+  if(p0El) p0El.addEventListener('input', updateUsdFromP0);
 
   if (assetSel) {
     assetSel.addEventListener('change', () => {
