@@ -1296,6 +1296,16 @@ function generate() {
   const jlp = document.getElementById('jlpStrategyMode');
   const triple = document.getElementById('tripleLpMode');
   
+  // --- FIX: BUTTON LISTENERS ADDED HERE ---
+  const btn = document.getElementById('btn');
+  if(btn) btn.addEventListener('click', generate);
+  
+  const btnClear = document.getElementById('btnClear');
+  if(btnClear) btnClear.addEventListener('click', function(){
+    document.getElementById('resultsContainer').innerHTML = '';
+  });
+  // ----------------------------------------
+  
   dual.addEventListener('change', function(){ if(this.checked) { jlp.checked=false; triple.checked=false; } });
   jlp.addEventListener('change', function(){ if(this.checked) { dual.checked=false; triple.checked=false; } });
   triple.addEventListener('change', function(){ if(this.checked) { dual.checked=false; jlp.checked=false; } });
