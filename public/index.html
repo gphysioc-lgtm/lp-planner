@@ -415,6 +415,7 @@ async function fetchLiveExposure() {
         if (looksLikeMap) {
              dataList = keys.map(k => ({ symbol: k, ...rawData[k] }));
         } 
+        else if (Array.isArray(rawData.table_data)) dataList = rawData.table_data;
         else if (Array.isArray(rawData.data)) dataList = rawData.data;
         else if (Array.isArray(rawData.positions)) dataList = rawData.positions;
         else if (Array.isArray(rawData.result)) dataList = rawData.result;
@@ -437,8 +438,8 @@ async function fetchLiveExposure() {
     }
 
     if (found) {
-        // Try to get USD value from likely fields
-        const usdVal = Number(found.usdValue || found.amountUsd || found.positionUsd || found.exposureUsd || found.value || found.usd || 0);
+        // Get net exposure from API (net = long - short)
+        const usdVal = Number(found.net_exposure_usd_from_base || 0);
         
         if (!isNaN(usdVal) && usdVal !== 0) {
             const denomExposure = usdVal / denomUsd;
