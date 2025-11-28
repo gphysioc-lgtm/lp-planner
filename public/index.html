@@ -131,7 +131,6 @@
 </header>
 
 <div class="wrap">
-  <!-- Inputs Section -->
   <div class="card">
     <h2>Inputs
       <span class="pill" style="float:right; background:var(--good); border-color:#1c693b;">
@@ -165,7 +164,6 @@
       Loading asset list from Google Sheet...
     </div>
 
-    <!-- Prices in ALT/Denom -->
     <div class="row">
       <div>
         <label>Price Min (Pmin, ALT/denom)</label>
@@ -189,13 +187,11 @@
         <div class="muted" id="altPriceSummary">Set P₀ and denom price to see ALT/USD.</div>
       </div>
       <div>
-        <!-- Exposed JLP Price for JLP Mode visibility -->
         <label style="color:var(--accent);">JLP Price (USD, for JLP Mode)</label>
         <input type="number" id="jlpUsd" step="0.001" value="0" style="width:120px; border-color:var(--accent);">
       </div>
     </div>
 
-    <!-- Portfolio + target % -->
     <div class="row4" style="margin-top:6px;">
       <div>
         <label>Total Portfolio size (<span class="denomLabelShort">BTC</span>)</label>
@@ -225,7 +221,6 @@
       </div>
     </div>
 
-    <!-- Interval + current E + auto targets -->
     <div class="row4" style="margin-top:6px;">
       <div>
         <label>Interval size (%)</label>
@@ -237,7 +232,6 @@
         </label>
         <div style="display:flex; gap:4px;">
           <input type="number" id="currentE" step="0.0001" value="0" style="flex:1;">
-          <!-- Hidden Auto Fetch Indicator -->
           <span id="fetchIndicator" style="display:none; color:var(--accent); font-size:10px; align-self:center;">Updating...</span>
         </div>
         <div id="fetchStatus" style="font-size:10px; color:var(--warn); margin-top:2px; height:14px;"></div>
@@ -252,7 +246,6 @@
       </div>
     </div>
 
-    <!-- Misc config -->
     <div class="row4" style="margin-top:6px;">
       <div>
         <label>Precision decimals</label>
@@ -278,7 +271,6 @@
       </div>
     </div>
 
-    <!-- APR -->
     <div class="row4" style="margin-top:6px;">
       <div>
         <label>LP APR on total capital (%)</label>
@@ -290,7 +282,6 @@
       </div>
     </div>
     
-    <!-- Debug Area -->
     <div style="margin-top:12px;">
         <button class="secondary" onclick="toggleDebug()" style="font-size:11px; padding:4px 8px;">Toggle API Debug (Safe)</button>
         <div id="debugBox"></div>
@@ -839,7 +830,9 @@ function renderTripleAggregateTable(container, strategies) {
   if(refRows.length === 0) return;
 
   const btcPrice = strategies[2].params.denomUsd || 1; 
-  const jlpUsd = strategies[3].params.denomUsd || 1; 
+  // FIX: Use the Asset Price (p0) for JLP, not the Denom Price (USDC=1)
+  const jlpUsd = strategies[3].params.p0 || 1; 
+  
   const p0 = Number(document.getElementById('p0').value) || 0;
   const solPriceUsd = p0 * btcPrice; 
 
@@ -1183,7 +1176,9 @@ function generate() {
           title: `3. JLP / USDC (Asymmetric Split)`,
           id: 'q3',
           params: {
-            pmin: 0, pmax: 0, p0: 0, stepPct, // ignored
+            pmin: 0, pmax: 0, 
+            p0: jlpUsdLive, // FIX: Pass current JLP Price, not 0
+            stepPct, // ignored
             portfolioSize: capSplit, 
             currentE: curSplit,
             targetMinPct: targetMinPct,     // 1x for Below (USD Capital)
