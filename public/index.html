@@ -831,7 +831,9 @@ function renderTripleAggregateTable(container, strategies) {
 
   const btcPrice = strategies[2].params.denomUsd || 1; 
   // FIX: Use the Asset Price (p0) for JLP, not the Denom Price (USDC=1)
-  const jlpUsd = strategies[3].params.p0 || 1; 
+  // SAFEGUARD: Check if strategies[3] exists before access
+  const jlpStrat = strategies[3];
+  const jlpUsd = (jlpStrat && jlpStrat.params && jlpStrat.params.p0) ? jlpStrat.params.p0 : 1; 
   
   const p0 = Number(document.getElementById('p0').value) || 0;
   const solPriceUsd = p0 * btcPrice; 
@@ -1065,6 +1067,9 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
 function generate() {
   const container = document.getElementById('resultsContainer');
   container.innerHTML = '';
+  
+  const debugBox = document.getElementById('debugBox');
+  if(debugBox) debugBox.textContent += '\n\n--- Generating... ---';
 
   const assetSymbol = (document.getElementById('assetSelect').value || 'ALT').toUpperCase();
   const denomSymbol = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
@@ -1081,6 +1086,8 @@ function generate() {
   const isDual = document.getElementById('dualLpMode').checked;
   const isJlpMode = document.getElementById('jlpStrategyMode').checked;
   const isTripleMode = document.getElementById('tripleLpMode').checked;
+  
+  if(debugBox) debugBox.textContent += `\nMode: ${isTripleMode?'Triple':(isDual?'Dual':(isJlpMode?'JLP':'Standard'))}`;
 
   const strategies = [];
 
@@ -1092,6 +1099,11 @@ function generate() {
         const solP0Usd   = p0   * denomUsd;
         const totalUsdPort = portfolioSize * denomUsd;
         const totalUsdCurE = currentE * denomUsd;
+        
+        if(solP0Usd <= 0 || totalUsdPort <= 0) {
+            console.error("Zero price or portfolio in Triple Mode.");
+            if(debugBox) debugBox.textContent += '\nError: Zero Price or Portfolio for Triple Mode.';
+        }
 
         const refParams = {
             pmin: solPminUsd, pmax: solPmaxUsd, p0: solP0Usd, stepPct,
@@ -1105,7 +1117,10 @@ function generate() {
         };
         
         const refData = calculateStrategy(refParams);
-        if (!refData) return; // STOP if ref calc fails
+        if (!refData) {
+            if(debugBox) debugBox.textContent += '\nError: Failed to calculate Reference Strategy.';
+            return; // STOP if ref calc fails
+        }
 
         strategies.push({
           title: `Reference: Single ${assetSymbol}/USD LP (100% Allocation)`,
@@ -1192,6 +1207,7 @@ function generate() {
         });
      } catch (err) {
         console.error("Triple Mode Generation Error:", err);
+        if(debugBox) debugBox.textContent += `\nEXCEPTION in Triple Mode: ${err.message}`;
      }
 
   } else {
@@ -1253,6 +1269,8 @@ function generate() {
            const s = strategies[i];
            renderLPSection(container, s.title, s.data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id);
          }
+     } else {
+        if(debugBox) debugBox.textContent += '\nWarning: Triple Mode selected but no strategies generated.';
      }
   } else {
      strategies.forEach(s => {
