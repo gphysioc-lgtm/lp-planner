@@ -137,7 +137,7 @@
         Live Sheets & CoinGecko PRO
       </span>
     </h2>
-
+    
     <div class="row4" style="margin-top:6px; grid-template-columns:1fr 1fr 2fr;">
       <div>
         <label>Alt asset (Select to load config)</label>
@@ -156,15 +156,28 @@
         </select>
       </div>
       <div>
-        <label><span class="denomLabelShort">BTC</span> price (<span class="denomLabelShort">BTC</span>/USD) - Auto-Fetched</label>
-        <input type="number" id="denomUsd" step="0.01" value="60000">
+         <div class="footnote" id="sheetStatus" style="margin-top:24px; color:var(--warn);">
+            Loading asset list...
+         </div>
       </div>
     </div>
-    <div class="footnote" id="sheetStatus" style="margin-bottom:8px; color:var(--warn);">
-      Loading asset list from Google Sheet...
+
+    <div class="row" style="margin-top:12px; padding-top:12px; border-top:1px solid #1a2433;">
+      <div>
+        <label style="color:var(--accent);">Alt Price (USD)</label>
+        <input type="number" id="altUsd" step="0.000001" value="0" style="border-color:var(--accent);">
+      </div>
+      <div>
+        <label><span class="denomLabelShort">BTC</span> Price (USD)</label>
+        <input type="number" id="denomUsd" step="0.01" value="60000">
+      </div>
+      <div>
+         <label style="color:var(--accent);">JLP Price (USD, for JLP Mode)</label>
+         <input type="number" id="jlpUsd" step="0.001" value="0" style="border-color:var(--accent);">
+      </div>
     </div>
 
-    <div class="row">
+    <div class="row" style="margin-top:12px;">
       <div>
         <label>Price Min (Pmin, ALT/denom)</label>
         <input type="number" id="pmin" step="0.00000001" value="0.00010000">
@@ -174,25 +187,14 @@
         <input type="number" id="pmax" step="0.00000001" value="0.00035000">
       </div>
       <div>
-        <label>Current Price (P₀, ALT/denom)
-           <span style="color:var(--good); font-weight:bold; margin-left:4px;" id="p0LiveTag"></span>
+        <label>Current Price P₀ (ALT/<span class="denomLabelShort">BTC</span>)
+           <span style="color:var(--good); font-weight:bold; margin-left:4px;">(Calculated)</span>
         </label>
-        <input type="number" id="p0" step="0.00000001" value="0.00020800">
-      </div>
-    </div>
-    
-    <div class="row4" style="margin-top:6px; grid-template-columns:1fr 3fr;">
-      <div>
-        <label>Current ALT price (derived)</label>
-        <div class="muted" id="altPriceSummary">Set P₀ and denom price to see ALT/USD.</div>
-      </div>
-      <div>
-        <label style="color:var(--accent);">JLP Price (USD, for JLP Mode)</label>
-        <input type="number" id="jlpUsd" step="0.001" value="0" style="width:120px; border-color:var(--accent);">
+        <input type="number" id="p0" step="0.00000001" value="0" readonly>
       </div>
     </div>
 
-    <div class="row4" style="margin-top:6px;">
+    <div class="row4" style="margin-top:12px;">
       <div>
         <label>Total Portfolio size (<span class="denomLabelShort">BTC</span>)</label>
         <input type="number" id="portfolioSize" step="0.0001" value="0">
@@ -332,27 +334,21 @@ function toggleDebug() {
     el.style.display = el.style.display === 'block' ? 'none' : 'block';
 }
 
-function updateAltPriceSummary(){
-  const p0El = document.getElementById('p0');
-  const denomUsdEl = document.getElementById('denomUsd');
-  const out = document.getElementById('altPriceSummary');
-  if(!p0El || !denomUsdEl || !out) return;
-  const p0 = Number(p0El.value || 0);
-  const denomUsd = Number(denomUsdEl.value || 0);
-  const denomSym = (document.getElementById('denomSelect')?.value || 'BTC').toUpperCase();
-  const assetSym = (document.getElementById('assetSelect')?.value || 'ALT').toUpperCase();
-  if(!(p0 > 0 && denomUsd > 0)){
-    out.textContent = 'Set P₀ and ' + denomSym + '/USD to see ' + assetSym + '/USD.';
-    return;
-  }
-  const altUsd = p0 * denomUsd;
-  out.textContent = assetSym + ' = ' + fmt(p0, 8) + ' ' + denomSym +
-                    ' ≈ ' + fmt(altUsd, 4) + ' USD';
-}
-
 function updateDenomLabels(sym){
   const s = sym || 'BTC';
   document.querySelectorAll('.denomLabelShort').forEach(el => { el.textContent = s; });
+}
+
+// --- CALCULATION OF P0 FROM USD INPUTS ---
+function updateP0FromUsd() {
+    const altUsd = Number(document.getElementById('altUsd').value || 0);
+    const denomUsd = Number(document.getElementById('denomUsd').value || 0);
+    const p0El = document.getElementById('p0');
+    
+    if(altUsd > 0 && denomUsd > 0) {
+        const ratio = altUsd / denomUsd;
+        p0El.value = ratio.toFixed(8); // High precision for small ratios
+    }
 }
 
 // --- NEW: Auto Fetch Live Exposure with Debug ---
@@ -468,9 +464,6 @@ function triggerAutoFetch() {
 
 
 async function autoFetchPrices(assetSym, denomSym){
-  const p0LiveTag = document.getElementById('p0LiveTag');
-  if(p0LiveTag) p0LiveTag.textContent = '';
-
   let assetId = COINGECKO_IDS[(assetSym || '').toUpperCase()];
   // FALLBACK: If ID not found, try symbol in lowercase
   if (!assetId && assetSym) {
@@ -496,9 +489,9 @@ async function autoFetchPrices(assetSym, denomSym){
       return;
     }
     
+    // If only USD is selected and no asset, stop
     if (!idsToFetch && isUsd) {
-        const denomUsdEl = document.getElementById('denomUsd');
-        if(denomUsdEl) denomUsdEl.value = 1;
+        document.getElementById('denomUsd').value = 1;
         triggerAutoFetch();
         return;
     }
@@ -508,42 +501,31 @@ async function autoFetchPrices(assetSym, denomSym){
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
 
+    // 1. Set Denom Price
     if (isUsd) {
-        const denomUsdEl = document.getElementById('denomUsd');
-        if(denomUsdEl) {
-            denomUsdEl.value = 1;
-            triggerAutoFetch();
-        }
+        document.getElementById('denomUsd').value = 1;
     } else {
         const denomPriceUsd = data[denomId]?.usd;
         if(denomPriceUsd){
-          const denomUsdEl = document.getElementById('denomUsd');
-          if(denomUsdEl) {
-             denomUsdEl.value = denomPriceUsd;
-             triggerAutoFetch(); 
-          }
+           document.getElementById('denomUsd').value = denomPriceUsd;
         }
     }
 
+    // 2. Set Alt Price (USD)
+    if(assetId && data[assetId]?.usd){
+      document.getElementById('altUsd').value = data[assetId].usd;
+    }
+
+    // 3. Set JLP Price
     if(jlpId && data[jlpId]?.usd){
        document.getElementById('jlpUsd').value = data[jlpId].usd;
     }
-
-    const currentDenomUsd = isUsd ? 1 : (data[denomId]?.usd || 0);
-
-    if(assetId && data[assetId]?.usd && currentDenomUsd){
-      const assetPriceUsd = data[assetId].usd;
-      const derivedP0 = assetPriceUsd / currentDenomUsd;
-      
-      const p0El = document.getElementById('p0');
-      if(p0El){
-        p0El.value = derivedP0.toFixed(8);
-        if(p0LiveTag) p0LiveTag.textContent = '(Live)';
-      }
-    }
-
-    updateAltPriceSummary();
-    generate();
+    
+    // 4. Update the Calculated P0 (Ratio)
+    updateP0FromUsd();
+    
+    // 5. Trigger exposure fetch & generate
+    triggerAutoFetch();
 
   } catch(err){
     console.error('Error fetching prices:', err);
@@ -605,7 +587,8 @@ async function loadAssetConfig(symbol){
 
     if(typeof data.pmin === 'number') document.getElementById('pmin').value = data.pmin;
     if(typeof data.pmax === 'number') document.getElementById('pmax').value = data.pmax;
-    if(typeof data.p0   === 'number') document.getElementById('p0').value   = data.p0;
+    // Note: We respect data.p0 if provided, but if the user changes USD inputs, it overrides.
+    // However, typically the sheet provides limits, not the live ratio.
     
     if(typeof data.portfolioSize === 'number') document.getElementById('portfolioSize').value = data.portfolioSize;
     if(typeof data.targetMinPct === 'number') document.getElementById('targetMinPct').value = data.targetMinPct;
@@ -625,9 +608,9 @@ async function loadAssetConfig(symbol){
     
     fetchLiveExposure();
     
-    updateAltPriceSummary();
+    // updateAltPriceSummary(); // Removed as we now have explicit inputs
     generate();
-    statusEl.textContent = `Config for ${symbol} loaded. Prices auto-updated.`;
+    statusEl.textContent = `Config for ${symbol} loaded.`;
 
   }catch(err){
     console.error('Error loading config', err);
@@ -1290,13 +1273,13 @@ function generate() {
 (function(){
   const assetSel = document.getElementById('assetSelect');
   const denomSel = document.getElementById('denomSelect');
-  const p0El = document.getElementById('p0');
+  const altUsdEl = document.getElementById('altUsd');
   const denomUsdEl = document.getElementById('denomUsd');
   const dual = document.getElementById('dualLpMode');
   const jlp = document.getElementById('jlpStrategyMode');
   const triple = document.getElementById('tripleLpMode');
   
-  // --- FIX: BUTTON LISTENERS ADDED HERE ---
+  // Button Listeners
   const btn = document.getElementById('btn');
   if(btn) btn.addEventListener('click', generate);
   
@@ -1304,15 +1287,19 @@ function generate() {
   if(btnClear) btnClear.addEventListener('click', function(){
     document.getElementById('resultsContainer').innerHTML = '';
   });
-  // ----------------------------------------
   
+  // Checkbox Logic
   dual.addEventListener('change', function(){ if(this.checked) { jlp.checked=false; triple.checked=false; } });
   jlp.addEventListener('change', function(){ if(this.checked) { dual.checked=false; triple.checked=false; } });
   triple.addEventListener('change', function(){ if(this.checked) { dual.checked=false; jlp.checked=false; } });
 
+  // Input Listeners for Auto-Calc
+  if(altUsdEl) altUsdEl.addEventListener('input', updateP0FromUsd);
+  if(denomUsdEl) denomUsdEl.addEventListener('input', updateP0FromUsd);
+
   if (assetSel) {
     assetSel.addEventListener('change', () => {
-      updateAltPriceSummary();
+      // updateAltPriceSummary();
       loadAssetConfig(assetSel.value);
     });
   }
@@ -1324,13 +1311,9 @@ function generate() {
       autoFetchPrices(currentAsset, denomSel.value);
     });
   }
-
-  [p0El, denomUsdEl].forEach(e => e && e.addEventListener('change', updateAltPriceSummary));
-  [p0El, denomUsdEl].forEach(e => e && e.addEventListener('input', updateAltPriceSummary));
   
   loadAssetList();
   if (denomSel) autoFetchPrices('', denomSel.value);
-  updateAltPriceSummary();
 })();
 </script>
 </body>
