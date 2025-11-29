@@ -393,32 +393,22 @@ async function fetchLiveExposure() {
   
   try {
     const res = await fetch('/api/exposure');
-    
-    if (!res.ok) {
-        throw new Error(`Error ${res.status}`);
-    }
+    if (!res.ok) { throw new Error(`Error ${res.status}`); }
     
     const rawData = await res.json();
     
     // --- Robust Parsing Strategy ---
     let dataList = [];
-    if (Array.isArray(rawData)) {
-        dataList = rawData;
-    } 
+    if (Array.isArray(rawData)) { dataList = rawData; } 
     else if (typeof rawData === 'object' && rawData !== null) {
         const keys = Object.keys(rawData);
         const looksLikeMap = keys.length > 0 && keys.every(k => k === k.toUpperCase() && k.length < 10);
-        
-        if (looksLikeMap) {
-             dataList = keys.map(k => ({ symbol: k, ...rawData[k] }));
-        } 
+        if (looksLikeMap) { dataList = keys.map(k => ({ symbol: k, ...rawData[k] })); } 
         else if (Array.isArray(rawData.table_data)) dataList = rawData.table_data;
         else if (Array.isArray(rawData.data)) dataList = rawData.data;
         else if (Array.isArray(rawData.positions)) dataList = rawData.positions;
         else if (Array.isArray(rawData.result)) dataList = rawData.result;
-        else {
-           dataList = [rawData];
-        }
+        else { dataList = [rawData]; }
     }
 
     let found = null;
@@ -436,7 +426,6 @@ async function fetchLiveExposure() {
 
     if (found) {
         const usdVal = Number(found.net_exposure_usd_from_base || 0);
-        
         if (!isNaN(usdVal) && usdVal !== 0) {
             const denomExposure = usdVal / denomUsd;
             currentEEl.value = denomExposure.toFixed(6);
@@ -467,15 +456,27 @@ function triggerAutoFetch() {
 }
 
 
+// --- SPLIT API CALLS to Avoid 500 Errors on massive query strings ---
+async function fetchPriceBatch(ids) {
+    if(!ids) return {};
+    try {
+        const url = `/api/price?ids=${encodeURIComponent(ids)}&vs_currencies=usd`;
+        const res = await fetch(url);
+        if(!res.ok) throw new Error(res.statusText);
+        return await res.json();
+    } catch(e) {
+        console.warn("Batch fetch failed:", e);
+        return null;
+    }
+}
+
 async function autoFetchPrices(assetSym, denomSym){
   const statusEl = document.getElementById('sheetStatus');
   statusEl.textContent = "Fetching prices...";
   statusEl.style.color = 'var(--accent)';
 
   let assetId = COINGECKO_IDS[(assetSym || '').toUpperCase()];
-  if (!assetId && assetSym) {
-      assetId = assetSym.toLowerCase();
-  }
+  if (!assetId && assetSym) { assetId = assetSym.toLowerCase(); }
 
   const denomId = COINGECKO_IDS[(denomSym || '').toUpperCase()];
   const jlpId   = COINGECKO_IDS['JLP'];
@@ -486,29 +487,34 @@ async function autoFetchPrices(assetSym, denomSym){
     return;
   }
 
-  let idsToFetch = isUsd ? '' : denomId;
-  if(assetId) idsToFetch += (idsToFetch ? ',' : '') + assetId;
-  if(jlpId)   idsToFetch += (idsToFetch ? ',' : '') + jlpId;
-
   try {
     if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
       statusEl.innerHTML = '<span style="color:var(--warn)">(Live prices require Vercel)</span>';
       return;
     }
     
-    if (!idsToFetch && isUsd) {
-        document.getElementById('denomUsd').value = 1;
-        triggerAutoFetch();
-        statusEl.textContent = "Prices Ready (USD mode).";
-        return;
+    // 1. Fetch MAIN Pair (Asset + Denom) - Critical
+    let mainIds = isUsd ? '' : denomId;
+    if(assetId) mainIds += (mainIds ? ',' : '') + assetId;
+    
+    let mainData = {};
+    if(mainIds) {
+        mainData = await fetchPriceBatch(mainIds);
+        if(!mainData) throw new Error("Main pair fetch failed");
     }
 
-    const url = `/api/price?ids=${encodeURIComponent(idsToFetch)}&vs_currencies=usd`;
-    const res = await fetch(url);
-    if(!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
+    // 2. Fetch JLP Separately (Optional - prevents crashing the whole app)
+    let jlpData = {};
+    if(jlpId) {
+        jlpData = await fetchPriceBatch(jlpId) || {};
+    }
+    
+    // Combine Data
+    const data = { ...mainData, ...jlpData };
 
-    // 1. Set Denom Price
+    // --- Update UI ---
+    
+    // Denom Price
     if (isUsd) {
         document.getElementById('denomUsd').value = 1;
     } else {
@@ -518,20 +524,20 @@ async function autoFetchPrices(assetSym, denomSym){
         }
     }
 
-    // 2. Set Alt Price (USD)
+    // Alt Price
     if(assetId && data[assetId]?.usd){
       document.getElementById('altUsd').value = data[assetId].usd;
     }
 
-    // 3. Set JLP Price (Robust check)
+    // JLP Price
     if(jlpId && data[jlpId]?.usd){
        document.getElementById('jlpUsd').value = data[jlpId].usd;
     }
     
-    // 4. Update the Calculated P0 (Ratio) - Only if Alt USD is non-zero
+    // Recalc P0
     updateP0FromUsd();
     
-    // 5. Trigger exposure fetch & generate
+    // Exposure
     triggerAutoFetch();
     
     statusEl.textContent = `Prices Updated for ${assetSym}.`;
@@ -539,7 +545,7 @@ async function autoFetchPrices(assetSym, denomSym){
 
   } catch(err){
     console.error('Error fetching prices:', err);
-    statusEl.textContent = `Price API Failed: ${err.message}`;
+    statusEl.textContent = `Price API Error: ${err.message}`;
     statusEl.style.color = 'var(--bad)';
   }
 }
@@ -560,9 +566,7 @@ async function loadAssetList(){
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     
-    if(data.error){
-       throw new Error(data.error);
-    }
+    if(data.error){ throw new Error(data.error); }
     
     if(data.assets && Array.isArray(data.assets)){
       data.assets.forEach(sym => {
@@ -590,11 +594,7 @@ async function loadAssetConfig(symbol){
   statusEl.textContent = `Loading config for ${symbol}...`;
 
   try{
-    // 1. Start fetching prices FIRST
-    let denomSym = 'BTC';
-    // We don't know the denom yet, but we can start fetching the asset price logic
-    // Actually, we need to fetch the config first to know the denom.
-    
+    // 1. Load Google Sheet Data
     const url = `${APPS_SCRIPT_URL}?symbol=${encodeURIComponent(symbol)}`;
     const res = await fetch(url);
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -602,13 +602,15 @@ async function loadAssetConfig(symbol){
 
     if(data.error) throw new Error(data.error);
 
+    // 2. Populate standard fields
     if(typeof data.pmin === 'number') document.getElementById('pmin').value = data.pmin;
     if(typeof data.pmax === 'number') document.getElementById('pmax').value = data.pmax;
-    
     if(typeof data.portfolioSize === 'number') document.getElementById('portfolioSize').value = data.portfolioSize;
     if(typeof data.targetMinPct === 'number') document.getElementById('targetMinPct').value = data.targetMinPct;
     if(typeof data.targetMaxPct === 'number') document.getElementById('targetMaxPct').value = data.targetMaxPct;
 
+    // 3. Set Denom
+    let denomSym = 'BTC';
     if(data.denomAsset){
       const dSel = document.getElementById('denomSelect');
       if(dSel){
@@ -618,30 +620,25 @@ async function loadAssetConfig(symbol){
       }
     }
     
-    // 2. Fetch Live Prices
+    // 4. Fetch Live Prices (Waits for completion)
     await autoFetchPrices(symbol, denomSym);
     
-    // 3. SMART LOAD CHECK
-    // Only use sheet P0 if we failed to get a live USD price
-    const currentAltUsd = Number(document.getElementById('altUsd').value || 0);
+    // 5. SMART LOAD: Only override P0 if live fetch returned 0
+    const liveAltUsd = Number(document.getElementById('altUsd').value || 0);
     if(typeof data.p0 === 'number') {
-        if(currentAltUsd === 0) {
-            // Live fetch failed or returned 0, so safe to use Sheet P0
+        if(liveAltUsd === 0) {
+            // Live fetch failed, fallback to Sheet P0
             document.getElementById('p0').value = data.p0;
             updateUsdFromP0();
-            console.log("Used Sheet P0 (Live fetch failed/zero)");
-        } else {
-            console.log("Ignored Sheet P0 in favor of Live Price");
         }
     }
     
     fetchLiveExposure();
     generate();
-    // Status text is set by autoFetchPrices
 
   }catch(err){
     console.error('Error loading config', err);
-    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}.`;
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}. (${err.message})`;
   }
 }
 
