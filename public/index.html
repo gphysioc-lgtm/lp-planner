@@ -456,20 +456,8 @@ function triggerAutoFetch() {
 }
 
 
-// --- SPLIT API CALLS to Avoid 500 Errors on massive query strings ---
-async function fetchPriceBatch(ids) {
-    if(!ids) return {};
-    try {
-        const url = `/api/price?ids=${encodeURIComponent(ids)}&vs_currencies=usd`;
-        const res = await fetch(url);
-        if(!res.ok) throw new Error(res.statusText);
-        return await res.json();
-    } catch(e) {
-        console.warn("Batch fetch failed:", e);
-        return null;
-    }
-}
-
+// --- RESTORED SINGLE API CALL (With Safe Retry) ---
+// This fixes the HTTP 500 issue by bundling properly, but also catches errors.
 async function autoFetchPrices(assetSym, denomSym){
   const statusEl = document.getElementById('sheetStatus');
   statusEl.textContent = "Fetching prices...";
@@ -484,37 +472,51 @@ async function autoFetchPrices(assetSym, denomSym){
 
   if(!denomId && !isUsd){
     statusEl.textContent = "Waiting for denom asset...";
-    return;
+    return false;
   }
+
+  // Construct URL
+  let idsToFetch = isUsd ? '' : denomId;
+  if(assetId) idsToFetch += (idsToFetch ? ',' : '') + assetId;
+  if(jlpId)   idsToFetch += (idsToFetch ? ',' : '') + jlpId;
 
   try {
     if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
       statusEl.innerHTML = '<span style="color:var(--warn)">(Live prices require Vercel)</span>';
-      return;
+      return false;
     }
     
-    // 1. Fetch MAIN Pair (Asset + Denom) - Critical
-    let mainIds = isUsd ? '' : denomId;
-    if(assetId) mainIds += (mainIds ? ',' : '') + assetId;
-    
-    let mainData = {};
-    if(mainIds) {
-        mainData = await fetchPriceBatch(mainIds);
-        if(!mainData) throw new Error("Main pair fetch failed");
+    if (!idsToFetch && isUsd) {
+        document.getElementById('denomUsd').value = 1;
+        triggerAutoFetch();
+        statusEl.textContent = "Prices Ready (USD mode).";
+        return true;
     }
 
-    // 2. Fetch JLP Separately (Optional - prevents crashing the whole app)
-    let jlpData = {};
-    if(jlpId) {
-        jlpData = await fetchPriceBatch(jlpId) || {};
+    // MAIN FETCH
+    let data = null;
+    const url = `/api/price?ids=${encodeURIComponent(idsToFetch)}&vs_currencies=usd`;
+    
+    try {
+        const res = await fetch(url);
+        if(!res.ok) throw new Error(res.status);
+        data = await res.json();
+    } catch(fetchErr) {
+        console.warn("Main fetch failed, retrying minimal set...", fetchErr);
+        // RETRY: Fetch ONLY Main Asset + Denom (Drop JLP if causing issues)
+        let retryIds = isUsd ? '' : denomId;
+        if(assetId) retryIds += (retryIds ? ',' : '') + assetId;
+        
+        if(retryIds) {
+            const retryUrl = `/api/price?ids=${encodeURIComponent(retryIds)}&vs_currencies=usd`;
+            const retryRes = await fetch(retryUrl);
+            if(retryRes.ok) data = await retryRes.json();
+        }
     }
-    
-    // Combine Data
-    const data = { ...mainData, ...jlpData };
 
-    // --- Update UI ---
-    
-    // Denom Price
+    if(!data) throw new Error("All price fetches failed.");
+
+    // 1. Set Denom Price
     if (isUsd) {
         document.getElementById('denomUsd').value = 1;
     } else {
@@ -524,29 +526,31 @@ async function autoFetchPrices(assetSym, denomSym){
         }
     }
 
-    // Alt Price
+    // 2. Set Alt Price (USD)
     if(assetId && data[assetId]?.usd){
       document.getElementById('altUsd').value = data[assetId].usd;
     }
 
-    // JLP Price
+    // 3. Set JLP Price
     if(jlpId && data[jlpId]?.usd){
        document.getElementById('jlpUsd').value = data[jlpId].usd;
     }
     
-    // Recalc P0
+    // 4. Update the Calculated P0 (Ratio) - Only if Alt USD is non-zero
     updateP0FromUsd();
     
-    // Exposure
+    // 5. Trigger exposure fetch & generate
     triggerAutoFetch();
     
     statusEl.textContent = `Prices Updated for ${assetSym}.`;
     statusEl.style.color = 'var(--good)';
+    return true;
 
   } catch(err){
     console.error('Error fetching prices:', err);
-    statusEl.textContent = `Price API Error: ${err.message}`;
-    statusEl.style.color = 'var(--bad)';
+    statusEl.textContent = `Price API Error (Using Config)`;
+    statusEl.style.color = 'var(--warn)';
+    return false; // Signal failure so we can load sheet defaults
   }
 }
 
@@ -620,17 +624,17 @@ async function loadAssetConfig(symbol){
       }
     }
     
-    // 4. Fetch Live Prices (Waits for completion)
-    await autoFetchPrices(symbol, denomSym);
+    // 4. Fetch Live Prices (returns true if success, false if failed)
+    const priceSuccess = await autoFetchPrices(symbol, denomSym);
     
-    // 5. SMART LOAD: Only override P0 if live fetch returned 0
+    // 5. SMART LOAD: 
+    // If price fetch FAILED (returned false) OR returned 0, fallback to Sheet P0
     const liveAltUsd = Number(document.getElementById('altUsd').value || 0);
-    if(typeof data.p0 === 'number') {
-        if(liveAltUsd === 0) {
-            // Live fetch failed, fallback to Sheet P0
-            document.getElementById('p0').value = data.p0;
-            updateUsdFromP0();
-        }
+    
+    if((!priceSuccess || liveAltUsd === 0) && typeof data.p0 === 'number') {
+        document.getElementById('p0').value = data.p0;
+        updateUsdFromP0();
+        console.log("Fallback: Used Sheet P0");
     }
     
     fetchLiveExposure();
