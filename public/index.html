@@ -328,7 +328,6 @@ function fmt(x, d){
 function fmtDenom(x, denomDecimals, denomUsd, denomSymbol){
   if(!isFinite(x)) return '–';
   const denomStr = fmt(x, denomDecimals) + ' ' + denomSymbol;
-  // If denom IS USD, don't show the duplicate USD value
   if(denomSymbol === 'USD' || !(denomUsd > 0)) return denomStr;
   const usdStr = fmt(x * denomUsd, 2) + ' USD';
   return denomStr + ' / ' + usdStr;
@@ -345,21 +344,17 @@ function updateDenomLabels(sym){
 }
 
 // --- SYNC FUNCTIONS (Bi-Directional) ---
-
-// 1. Inputs (USD) -> Calculates Ratio (P0)
 function updateP0FromUsd() {
     const altUsd = Number(document.getElementById('altUsd').value || 0);
     const denomUsd = Number(document.getElementById('denomUsd').value || 0);
     const p0El = document.getElementById('p0');
     
-    // Only update P0 if we have valid inputs. 
     if(altUsd > 0 && denomUsd > 0) {
         const ratio = altUsd / denomUsd;
         p0El.value = ratio.toFixed(10); 
     }
 }
 
-// 2. Input Ratio (P0) -> Calculates Alt USD
 function updateUsdFromP0() {
     const p0 = Number(document.getElementById('p0').value || 0);
     const denomUsd = Number(document.getElementById('denomUsd').value || 0);
@@ -371,7 +366,7 @@ function updateUsdFromP0() {
     }
 }
 
-// --- NEW: Auto Fetch Live Exposure with Debug ---
+// --- LIVE EXPOSURE (Independent Fetch) ---
 let fetchTimeout = null;
 
 async function fetchLiveExposure() {
@@ -385,19 +380,15 @@ async function fetchLiveExposure() {
     statusEl.textContent = '';
     return;
   }
-  if(denomUsd <= 0) {
-    return;
-  }
+  if(denomUsd <= 0) return;
 
   if(indEl) indEl.style.display = 'block';
   
   try {
     const res = await fetch('/api/exposure');
-    if (!res.ok) { throw new Error(`Error ${res.status}`); }
+    if (!res.ok) throw new Error(`Error ${res.status}`);
     
     const rawData = await res.json();
-    
-    // --- Robust Parsing Strategy ---
     let dataList = [];
     if (Array.isArray(rawData)) { dataList = rawData; } 
     else if (typeof rawData === 'object' && rawData !== null) {
@@ -456,8 +447,23 @@ function triggerAutoFetch() {
 }
 
 
-// --- RESTORED SINGLE API CALL (With Safe Retry) ---
-// This fixes the HTTP 500 issue by bundling properly, but also catches errors.
+// --- PRICE FETCHING (Split Strategy for Robustness) ---
+// 1. Fetch Main Asset + Denom (Critical)
+// 2. Fetch JLP (Background, non-critical)
+
+async function fetchPriceBatch(ids) {
+    if(!ids) return {};
+    try {
+        const url = `/api/price?ids=${encodeURIComponent(ids)}&vs_currencies=usd`;
+        const res = await fetch(url);
+        if(!res.ok) throw new Error(res.statusText);
+        return await res.json();
+    } catch(e) {
+        console.warn("Batch fetch failed:", e);
+        return null;
+    }
+}
+
 async function autoFetchPrices(assetSym, denomSym){
   const statusEl = document.getElementById('sheetStatus');
   statusEl.textContent = "Fetching prices...";
@@ -475,82 +481,65 @@ async function autoFetchPrices(assetSym, denomSym){
     return false;
   }
 
-  // Construct URL
-  let idsToFetch = isUsd ? '' : denomId;
-  if(assetId) idsToFetch += (idsToFetch ? ',' : '') + assetId;
-  if(jlpId)   idsToFetch += (idsToFetch ? ',' : '') + jlpId;
-
   try {
     if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
       statusEl.innerHTML = '<span style="color:var(--warn)">(Live prices require Vercel)</span>';
       return false;
     }
     
-    if (!idsToFetch && isUsd) {
-        document.getElementById('denomUsd').value = 1;
-        triggerAutoFetch();
-        statusEl.textContent = "Prices Ready (USD mode).";
-        return true;
-    }
-
-    // MAIN FETCH
-    let data = null;
-    const url = `/api/price?ids=${encodeURIComponent(idsToFetch)}&vs_currencies=usd`;
-    
-    try {
-        const res = await fetch(url);
-        if(!res.ok) throw new Error(res.status);
-        data = await res.json();
-    } catch(fetchErr) {
-        console.warn("Main fetch failed, retrying minimal set...", fetchErr);
-        // RETRY: Fetch ONLY Main Asset + Denom (Drop JLP if causing issues)
-        let retryIds = isUsd ? '' : denomId;
-        if(assetId) retryIds += (retryIds ? ',' : '') + assetId;
-        
-        if(retryIds) {
-            const retryUrl = `/api/price?ids=${encodeURIComponent(retryIds)}&vs_currencies=usd`;
-            const retryRes = await fetch(retryUrl);
-            if(retryRes.ok) data = await retryRes.json();
-        }
-    }
-
-    if(!data) throw new Error("All price fetches failed.");
-
-    // 1. Set Denom Price
     if (isUsd) {
         document.getElementById('denomUsd').value = 1;
-    } else {
-        const denomPriceUsd = data[denomId]?.usd;
-        if(denomPriceUsd){
-           document.getElementById('denomUsd').value = denomPriceUsd;
+    }
+
+    // --- STEP 1: Main Fetch (Asset + Denom) ---
+    let mainIds = (!isUsd && denomId) ? denomId : '';
+    if(assetId) mainIds += (mainIds ? ',' : '') + assetId;
+    
+    let mainData = {};
+    let success = false;
+
+    if(mainIds) {
+        mainData = await fetchPriceBatch(mainIds);
+        if(mainData) {
+            success = true;
+            // Update UI
+            if(!isUsd && mainData[denomId]?.usd) {
+                document.getElementById('denomUsd').value = mainData[denomId].usd;
+            }
+            if(assetId && mainData[assetId]?.usd) {
+                document.getElementById('altUsd').value = mainData[assetId].usd;
+            }
         }
+    } else {
+        // Just USD mode with no asset? 
+        success = true; 
     }
 
-    // 2. Set Alt Price (USD)
-    if(assetId && data[assetId]?.usd){
-      document.getElementById('altUsd').value = data[assetId].usd;
+    // --- STEP 2: JLP Fetch (Separate to avoid 500 error on huge query) ---
+    if(jlpId) {
+        // Run in background, don't await blocking logic
+        fetchPriceBatch(jlpId).then(jlpData => {
+            if(jlpData && jlpData[jlpId]?.usd) {
+                document.getElementById('jlpUsd').value = jlpData[jlpId].usd;
+            }
+        });
+    }
+    
+    if(success) {
+        updateP0FromUsd();
+        triggerAutoFetch();
+        statusEl.textContent = `Prices Updated for ${assetSym}.`;
+        statusEl.style.color = 'var(--good)';
+        return true;
+    } else {
+        throw new Error("Main fetch failed");
     }
 
-    // 3. Set JLP Price
-    if(jlpId && data[jlpId]?.usd){
-       document.getElementById('jlpUsd').value = data[jlpId].usd;
-    }
-    
-    // 4. Update the Calculated P0 (Ratio) - Only if Alt USD is non-zero
-    updateP0FromUsd();
-    
-    // 5. Trigger exposure fetch & generate
-    triggerAutoFetch();
-    
-    statusEl.textContent = `Prices Updated for ${assetSym}.`;
-    statusEl.style.color = 'var(--good)';
-    return true;
-
-  } catch(err){
-    console.error('Error fetching prices:', err);
-    statusEl.textContent = `Price API Error (Using Config)`;
+  } catch(err) {
+    console.error('Price Error:', err);
+    statusEl.textContent = `Price API Error. Enter Manually.`;
     statusEl.style.color = 'var(--warn)';
-    return false; // Signal failure so we can load sheet defaults
+    return false;
   }
 }
 
@@ -582,8 +571,6 @@ async function loadAssetList(){
         }
       });
       statusEl.textContent = `Loaded ${data.assets.length} assets.`;
-    } else {
-      throw new Error('Invalid data structure.');
     }
   }catch(err){
     console.error('Error loading asset list', err);
@@ -593,12 +580,10 @@ async function loadAssetList(){
 
 async function loadAssetConfig(symbol){
   if(!symbol) return;
-  
   const statusEl = document.getElementById('sheetStatus');
   statusEl.textContent = `Loading config for ${symbol}...`;
 
   try{
-    // 1. Load Google Sheet Data
     const url = `${APPS_SCRIPT_URL}?symbol=${encodeURIComponent(symbol)}`;
     const res = await fetch(url);
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -606,14 +591,12 @@ async function loadAssetConfig(symbol){
 
     if(data.error) throw new Error(data.error);
 
-    // 2. Populate standard fields
     if(typeof data.pmin === 'number') document.getElementById('pmin').value = data.pmin;
     if(typeof data.pmax === 'number') document.getElementById('pmax').value = data.pmax;
     if(typeof data.portfolioSize === 'number') document.getElementById('portfolioSize').value = data.portfolioSize;
     if(typeof data.targetMinPct === 'number') document.getElementById('targetMinPct').value = data.targetMinPct;
     if(typeof data.targetMaxPct === 'number') document.getElementById('targetMaxPct').value = data.targetMaxPct;
 
-    // 3. Set Denom
     let denomSym = 'BTC';
     if(data.denomAsset){
       const dSel = document.getElementById('denomSelect');
@@ -624,17 +607,17 @@ async function loadAssetConfig(symbol){
       }
     }
     
-    // 4. Fetch Live Prices (returns true if success, false if failed)
-    const priceSuccess = await autoFetchPrices(symbol, denomSym);
+    // FETCH PRICES
+    const success = await autoFetchPrices(symbol, denomSym);
     
-    // 5. SMART LOAD: 
-    // If price fetch FAILED (returned false) OR returned 0, fallback to Sheet P0
-    const liveAltUsd = Number(document.getElementById('altUsd').value || 0);
+    // SMART LOAD: Only if API failed (returned false), use sheet P0
+    // Check current Alt USD. If 0, we assume failure.
+    const currentAlt = Number(document.getElementById('altUsd').value || 0);
     
-    if((!priceSuccess || liveAltUsd === 0) && typeof data.p0 === 'number') {
-        document.getElementById('p0').value = data.p0;
-        updateUsdFromP0();
-        console.log("Fallback: Used Sheet P0");
+    if((!success || currentAlt === 0) && typeof data.p0 === 'number') {
+       document.getElementById('p0').value = data.p0;
+       updateUsdFromP0(); // Calc USD from P0
+       console.log("Using Sheet P0 fallback");
     }
     
     fetchLiveExposure();
@@ -642,7 +625,7 @@ async function loadAssetConfig(symbol){
 
   }catch(err){
     console.error('Error loading config', err);
-    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}. (${err.message})`;
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}.`;
   }
 }
 
@@ -830,9 +813,6 @@ function calculateStrategy(params, manualBands) {
   };
 }
 
-// --------------------------------------------------------------------------
-// Triple LP Breakdown Renderer
-// --------------------------------------------------------------------------
 function renderTripleAggregateTable(container, strategies) {
   const ref = strategies[0]; 
   const getRows = (s) => s.data ? s.data.rows : [];
@@ -1102,7 +1082,6 @@ function generate() {
 
   if (isTripleMode) {
      try {
-        // A. Reference: Single SOL/USD Strategy
         const solPminUsd = pmin * denomUsd;
         const solPmaxUsd = pmax * denomUsd;
         const solP0Usd   = p0   * denomUsd;
@@ -1128,7 +1107,7 @@ function generate() {
         const refData = calculateStrategy(refParams);
         if (!refData) {
             if(debugBox) debugBox.textContent += '\nError: Failed to calculate Reference Strategy.';
-            return; // STOP if ref calc fails
+            return;
         }
 
         strategies.push({
@@ -1138,22 +1117,19 @@ function generate() {
           data: refData
         });
 
-        // JLP Price setup
         const jlpInputVal = Number(document.getElementById('jlpUsd').value);
-        // Guard against p0=0 or denomUsd=0
         const safeSolP0Usd = (solP0Usd > 0) ? solP0Usd : 1; 
         const jlpUsdLive = (jlpInputVal > 0) ? jlpInputVal : (safeSolP0Usd * 0.5); 
         
         if(jlpInputVal <= 0 && jlpUsdLive > 0) document.getElementById('jlpUsd').value = jlpUsdLive.toFixed(3);
         
         const getJlpPrice = (solPrice) => {
-            if (solP0Usd <= 0) return 0; // Safety check
+            if (solP0Usd <= 0) return 0;
             return jlpUsdLive * (0.5 * (solPrice / solP0Usd) + 0.5);
         };
 
-        // Map Bands for Alignment
         const refBands = refData.rawBands; 
-        if (!refBands || !refBands.down || !refBands.up) return; // Safety check
+        if (!refBands || !refBands.down || !refBands.up) return;
 
         const mapBandList = (list, fnMap) => list.map((b, i) => ({
             pa: fnMap(b.pa),
@@ -1166,11 +1142,9 @@ function generate() {
         const bandsQ2 = { down: mapBandList(refBands.down, p => p / denomUsd), up: mapBandList(refBands.up, p => p / denomUsd) };
         const bandsQ3 = { down: mapBandList(refBands.down, p => getJlpPrice(p)), up: mapBandList(refBands.up, p => getJlpPrice(p)) };
 
-        // Define Strategies (Q1-Q3)
         const capSplit = totalUsdPort / 3.0;
         const curSplit = totalUsdCurE / 3.0;
 
-        // Q1: SOL/USD
         strategies.push({
           title: `1. ${assetSymbol} / USD (Equal Split)`,
           id: 'q1',
@@ -1178,7 +1152,6 @@ function generate() {
           customBands: bandsQ1
         });
         
-        // Q2: SOL/BTC
         strategies.push({
           title: `2. ${assetSymbol} / ${denomSymbol} (Equal Split)`,
           id: 'q2',
@@ -1195,18 +1168,17 @@ function generate() {
           customBands: bandsQ2
         });
         
-        // Q3: JLP/USDC
         strategies.push({
           title: `3. JLP / USDC (Asymmetric Split)`,
           id: 'q3',
           params: {
             pmin: 0, pmax: 0, 
-            p0: jlpUsdLive, // FIX: Pass current JLP Price, not 0
-            stepPct, // ignored
+            p0: jlpUsdLive, 
+            stepPct, 
             portfolioSize: capSplit, 
             currentE: curSplit,
-            targetMinPct: targetMinPct,     // 1x for Below (USD Capital)
-            targetMaxPct: targetMaxPct * 2, // 2x for Above (JLP Inventory)
+            targetMinPct: targetMinPct, 
+            targetMaxPct: targetMaxPct * 2, 
             denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP',
             scaleMode: document.getElementById('scaleMode').value,
             aprPct: Number(document.getElementById('aprPct').value),
@@ -1220,8 +1192,6 @@ function generate() {
      }
 
   } else {
-     // Standard Modes
-     // REFACTOR: Use capitalRatio based on Dual Mult if selected
      let capitalRatio = 1.0;
      if (isDual) {
          capitalRatio = Number(document.getElementById('dualMult').value) || 0.5;
@@ -1294,7 +1264,6 @@ function generate() {
      });
   }
   
-  // Update Target Display logic to account for generic ratio
   let finalRatio = 1.0;
   if(isDual) finalRatio = Number(document.getElementById('dualMult').value) || 0.5;
   else if(isJlpMode) finalRatio = 0.5;
@@ -1317,7 +1286,6 @@ function generate() {
   const jlp = document.getElementById('jlpStrategyMode');
   const triple = document.getElementById('tripleLpMode');
   
-  // Button Listeners
   const btn = document.getElementById('btn');
   if(btn) btn.addEventListener('click', generate);
   
@@ -1326,21 +1294,17 @@ function generate() {
     document.getElementById('resultsContainer').innerHTML = '';
   });
   
-  // Checkbox Logic
   dual.addEventListener('change', function(){ if(this.checked) { jlp.checked=false; triple.checked=false; } });
   jlp.addEventListener('change', function(){ if(this.checked) { dual.checked=false; triple.checked=false; } });
   triple.addEventListener('change', function(){ if(this.checked) { dual.checked=false; jlp.checked=false; } });
 
-  // Input Listeners for Auto-Calc (Bi-Directional)
   if(altUsdEl) altUsdEl.addEventListener('input', updateP0FromUsd);
   if(denomUsdEl) denomUsdEl.addEventListener('input', updateP0FromUsd);
   
-  // ADDED: Listener for P0 -> USD (so manual P0 still works if desired)
   if(p0El) p0El.addEventListener('input', updateUsdFromP0);
 
   if (assetSel) {
     assetSel.addEventListener('change', () => {
-      // updateAltPriceSummary();
       loadAssetConfig(assetSel.value);
     });
   }
