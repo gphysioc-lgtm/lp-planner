@@ -316,7 +316,7 @@ const COINGECKO_IDS = {
   XRP: 'ripple', LDO: 'lido-dao', UNI: 'uniswap', ASTER: 'aster-2',
   JLP: 'jupiter-perpetuals-liquidity-provider-token',
   XPL: 'plasma-xpl',
-  HYPE: 'hyperliquid' // Added HYPE support
+  HYPE: 'hyperliquid'
 };
 
 function fmt(x, d){
@@ -353,10 +353,8 @@ function updateP0FromUsd() {
     const p0El = document.getElementById('p0');
     
     // Only update P0 if we have valid inputs. 
-    // This prevents overwriting manual P0 with 0 if API failed.
     if(altUsd > 0 && denomUsd > 0) {
         const ratio = altUsd / denomUsd;
-        // Use high precision for small ratios (like XPL/BTC)
         p0El.value = ratio.toFixed(10); 
     }
 }
@@ -381,7 +379,6 @@ async function fetchLiveExposure() {
   const denomUsd = Number(document.getElementById('denomUsd').value || 0);
   const statusEl = document.getElementById('fetchStatus');
   const currentEEl = document.getElementById('currentE');
-  const debugBox = document.getElementById('debugBox');
   const indEl = document.getElementById('fetchIndicator');
 
   if(!assetSym || assetSym === "") {
@@ -395,22 +392,13 @@ async function fetchLiveExposure() {
   if(indEl) indEl.style.display = 'block';
   
   try {
-    // Call our secure Vercel API proxy
     const res = await fetch('/api/exposure');
     
     if (!res.ok) {
-        const errText = await res.text();
-        console.error("Full API Error:", errText);
-        // Truncate error text for safety
-        debugBox.textContent = `Error Status: ${res.status}\nResponse: ${errText.substring(0, 1000)}...`;
         throw new Error(`Error ${res.status}`);
     }
     
     const rawData = await res.json();
-    
-    // Safe display in debug box
-    const debugStr = JSON.stringify(rawData, null, 2);
-    debugBox.textContent = debugStr.length > 2000 ? debugStr.substring(0, 2000) + "\n... (TRUNCATED)" : debugStr;
     
     // --- Robust Parsing Strategy ---
     let dataList = [];
@@ -447,7 +435,6 @@ async function fetchLiveExposure() {
     }
 
     if (found) {
-        // Get net exposure from API (net = long - short)
         const usdVal = Number(found.net_exposure_usd_from_base || 0);
         
         if (!isNaN(usdVal) && usdVal !== 0) {
@@ -461,12 +448,7 @@ async function fetchLiveExposure() {
             statusEl.style.color = 'var(--warn)';
         }
     } else {
-        let avail = "None";
-        if (dataList.length > 0) {
-             const sampleKeys = dataList.map(p => p.symbol || p.ticker || p.asset || Object.keys(p)[0] || '?');
-             hint = sampleKeys.slice(0, 5).join(', ');
-        }
-        statusEl.textContent = `No position found for ${assetSym}. (Keys: ${hint}...)`;
+        statusEl.textContent = `No position found for ${assetSym}.`;
         statusEl.style.color = 'var(--muted)';
     }
 
@@ -486,8 +468,11 @@ function triggerAutoFetch() {
 
 
 async function autoFetchPrices(assetSym, denomSym){
+  const statusEl = document.getElementById('sheetStatus');
+  statusEl.textContent = "Fetching prices...";
+  statusEl.style.color = 'var(--accent)';
+
   let assetId = COINGECKO_IDS[(assetSym || '').toUpperCase()];
-  // FALLBACK: If ID not found, try symbol in lowercase
   if (!assetId && assetSym) {
       assetId = assetSym.toLowerCase();
   }
@@ -497,6 +482,7 @@ async function autoFetchPrices(assetSym, denomSym){
   const isUsd   = (denomSym || '').toUpperCase() === 'USD';
 
   if(!denomId && !isUsd){
+    statusEl.textContent = "Waiting for denom asset...";
     return;
   }
 
@@ -506,15 +492,14 @@ async function autoFetchPrices(assetSym, denomSym){
 
   try {
     if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
-      const sheetStatus = document.getElementById('sheetStatus');
-      if(sheetStatus) sheetStatus.innerHTML += ' <span style="color:var(--warn)">(Live prices require Vercel deployment)</span>';
+      statusEl.innerHTML = '<span style="color:var(--warn)">(Live prices require Vercel)</span>';
       return;
     }
     
-    // If only USD is selected and no asset, stop
     if (!idsToFetch && isUsd) {
         document.getElementById('denomUsd').value = 1;
         triggerAutoFetch();
+        statusEl.textContent = "Prices Ready (USD mode).";
         return;
     }
 
@@ -538,7 +523,7 @@ async function autoFetchPrices(assetSym, denomSym){
       document.getElementById('altUsd').value = data[assetId].usd;
     }
 
-    // 3. Set JLP Price
+    // 3. Set JLP Price (Robust check)
     if(jlpId && data[jlpId]?.usd){
        document.getElementById('jlpUsd').value = data[jlpId].usd;
     }
@@ -548,9 +533,14 @@ async function autoFetchPrices(assetSym, denomSym){
     
     // 5. Trigger exposure fetch & generate
     triggerAutoFetch();
+    
+    statusEl.textContent = `Prices Updated for ${assetSym}.`;
+    statusEl.style.color = 'var(--good)';
 
   } catch(err){
     console.error('Error fetching prices:', err);
+    statusEl.textContent = `Price API Failed: ${err.message}`;
+    statusEl.style.color = 'var(--bad)';
   }
 }
 
@@ -562,7 +552,7 @@ async function loadAssetList(){
     return;
   }
 
-  statusEl.textContent = 'Loading asset list from Google Sheet...';
+  statusEl.textContent = 'Loading asset list...';
   sel.innerHTML = '<option value="">– Select asset –</option>';
   
   try{
@@ -583,13 +573,13 @@ async function loadAssetList(){
           sel.appendChild(opt);
         }
       });
-      statusEl.textContent = `Successfully loaded ${data.assets.length} assets from Google Sheet.`;
+      statusEl.textContent = `Loaded ${data.assets.length} assets.`;
     } else {
-      throw new Error('Invalid data structure returned from Google Sheet.');
+      throw new Error('Invalid data structure.');
     }
   }catch(err){
     console.error('Error loading asset list', err);
-    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load asset list. (${err.message})`;
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load list.`;
   }
 }
 
@@ -597,9 +587,14 @@ async function loadAssetConfig(symbol){
   if(!symbol) return;
   
   const statusEl = document.getElementById('sheetStatus');
-  statusEl.textContent = `Loading config for ${symbol} from Google Sheet...`;
+  statusEl.textContent = `Loading config for ${symbol}...`;
 
   try{
+    // 1. Start fetching prices FIRST
+    let denomSym = 'BTC';
+    // We don't know the denom yet, but we can start fetching the asset price logic
+    // Actually, we need to fetch the config first to know the denom.
+    
     const url = `${APPS_SCRIPT_URL}?symbol=${encodeURIComponent(symbol)}`;
     const res = await fetch(url);
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -610,18 +605,10 @@ async function loadAssetConfig(symbol){
     if(typeof data.pmin === 'number') document.getElementById('pmin').value = data.pmin;
     if(typeof data.pmax === 'number') document.getElementById('pmax').value = data.pmax;
     
-    // SMART LOAD: If sheet has P0, fill it, AND fill the Alt USD box
-    if(typeof data.p0 === 'number') {
-        document.getElementById('p0').value = data.p0;
-        // Immediate back-calc to fix the "0" issue
-        updateUsdFromP0();
-    }
-    
     if(typeof data.portfolioSize === 'number') document.getElementById('portfolioSize').value = data.portfolioSize;
     if(typeof data.targetMinPct === 'number') document.getElementById('targetMinPct').value = data.targetMinPct;
     if(typeof data.targetMaxPct === 'number') document.getElementById('targetMaxPct').value = data.targetMaxPct;
 
-    let denomSym = 'BTC';
     if(data.denomAsset){
       const dSel = document.getElementById('denomSelect');
       if(dSel){
@@ -631,16 +618,30 @@ async function loadAssetConfig(symbol){
       }
     }
     
+    // 2. Fetch Live Prices
     await autoFetchPrices(symbol, denomSym);
     
-    fetchLiveExposure();
+    // 3. SMART LOAD CHECK
+    // Only use sheet P0 if we failed to get a live USD price
+    const currentAltUsd = Number(document.getElementById('altUsd').value || 0);
+    if(typeof data.p0 === 'number') {
+        if(currentAltUsd === 0) {
+            // Live fetch failed or returned 0, so safe to use Sheet P0
+            document.getElementById('p0').value = data.p0;
+            updateUsdFromP0();
+            console.log("Used Sheet P0 (Live fetch failed/zero)");
+        } else {
+            console.log("Ignored Sheet P0 in favor of Live Price");
+        }
+    }
     
+    fetchLiveExposure();
     generate();
-    statusEl.textContent = `Config for ${symbol} loaded.`;
+    // Status text is set by autoFetchPrices
 
   }catch(err){
     console.error('Error loading config', err);
-    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}. (${err.message})`;
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}.`;
   }
 }
 
@@ -839,8 +840,6 @@ function renderTripleAggregateTable(container, strategies) {
   if(refRows.length === 0) return;
 
   const btcPrice = strategies[2].params.denomUsd || 1; 
-  // FIX: Use the Asset Price (p0) for JLP, not the Denom Price (USDC=1)
-  // SAFEGUARD: Check if strategies[3] exists before access
   const jlpStrat = strategies[3];
   const jlpUsd = (jlpStrat && jlpStrat.params && jlpStrat.params.p0) ? jlpStrat.params.p0 : 1; 
   
