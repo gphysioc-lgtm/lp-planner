@@ -153,6 +153,7 @@
           <option value="ETH">ETH</option>
           <option value="SOL">SOL</option>
           <option value="BNB">BNB</option>
+          <option value="HYPE">HYPE</option>
           <option value="USD">USD</option>
         </select>
       </div>
@@ -211,7 +212,9 @@
       <div style="display:flex; flex-direction:column; gap:6px;">
          <div class="chk-row">
             <input type="checkbox" id="dualLpMode">
-            <label for="dualLpMode" style="margin:0; font-size:12px; color:var(--ink); font-weight:600;">Dual LP (50/50 Split)</label>
+            <label for="dualLpMode" style="margin:0; font-size:12px; color:var(--ink); font-weight:600;">Dual LP</label>
+            <input type="number" id="dualMult" step="0.1" value="0.5" style="width:50px; padding:2px 5px; margin-left:8px; border-color:#233142;" title="Multiplier per strategy (0.5 = 50% split, 1.0 = Full Size)">
+            <span style="font-size:10px; color:var(--muted)">x</span>
          </div>
          <div class="chk-row">
             <input type="checkbox" id="jlpStrategyMode">
@@ -312,8 +315,8 @@ const COINGECKO_IDS = {
   LINK: 'chainlink', AVAX: 'avalanche-2', DOGE: 'dogecoin', ADA: 'cardano',
   XRP: 'ripple', LDO: 'lido-dao', UNI: 'uniswap', ASTER: 'aster-2',
   JLP: 'jupiter-perpetuals-liquidity-provider-token',
-  XPL: 'plasma-xpl' 
-  // Added XPL explicit support
+  XPL: 'plasma-xpl',
+  HYPE: 'hyperliquid' // Added HYPE support
 };
 
 function fmt(x, d){
@@ -1218,7 +1221,14 @@ function generate() {
 
   } else {
      // Standard Modes
-     const capitalRatio = isDual || isJlpMode ? 0.5 : 1.0;
+     // REFACTOR: Use capitalRatio based on Dual Mult if selected
+     let capitalRatio = 1.0;
+     if (isDual) {
+         capitalRatio = Number(document.getElementById('dualMult').value) || 0.5;
+     } else if (isJlpMode) {
+         capitalRatio = 0.5;
+     }
+
      const baseParams = {
         pmin, pmax, p0, stepPct,
         portfolioSize: portfolioSize * capitalRatio,
@@ -1249,14 +1259,14 @@ function generate() {
         strategies.push({ title: `JLP Strategy A: JLP / USDC`, id: 'jlp1', params: { ...baseParams, pmin: jlpPmin, pmax: jlpPmax, p0: jlpP0, portfolioSize: usdPortfolio*0.5, currentE: usdCurrentE*0.5, targetMinPct: targetMinPct*2, targetMaxPct: targetMaxPct*2, denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP' } });
         strategies.push({ title: `JLP Strategy B: SOL / JLP`, id: 'jlp2', params: { ...baseParams, pmin: ratioPmin, pmax: ratioPmax, p0: ratioP0, portfolioSize: (usdPortfolio*0.5)/jlpUsdLive, currentE: (usdCurrentE*0.5)/jlpUsdLive, denomSymbol: 'JLP', denomUsd: jlpUsdLive, assetSymbol: assetSymbol, targetMinPct: targetMinPct*2, targetMaxPct: targetMaxPct*2 } });
      } else {
-        strategies.push({ title: isDual?`LP 1 (50%)`:`Schedule`, id: 'lp1', params: baseParams });
+        strategies.push({ title: isDual?`LP 1 (${capitalRatio}x)`:`Schedule`, id: 'lp1', params: baseParams });
         if(isDual) {
            const usdPmin = pmin * denomUsd;
            const usdPmax = pmax * denomUsd;
            const usdP0 = p0 * denomUsd;
-           const usdPortfolio = portfolioSize * denomUsd * 0.5;
-           const usdCurrentE = currentE * denomUsd * 0.5;
-           strategies.push({ title: `LP 2 (USD, 50%)`, id: 'lp2', params: { ...baseParams, pmin: usdPmin, pmax: usdPmax, p0: usdP0, portfolioSize: usdPortfolio, currentE: usdCurrentE, denomSymbol: 'USD', denomUsd: 1 } });
+           const usdPortfolio = portfolioSize * denomUsd * capitalRatio;
+           const usdCurrentE = currentE * denomUsd * capitalRatio;
+           strategies.push({ title: `LP 2 (USD, ${capitalRatio}x)`, id: 'lp2', params: { ...baseParams, pmin: usdPmin, pmax: usdPmax, p0: usdP0, portfolioSize: usdPortfolio, currentE: usdCurrentE, denomSymbol: 'USD', denomUsd: 1 } });
         }
      }
   }
@@ -1284,11 +1294,15 @@ function generate() {
      });
   }
   
-  const capitalRatio = (isDual || isJlpMode) ? 0.5 : 1.0;
+  // Update Target Display logic to account for generic ratio
+  let finalRatio = 1.0;
+  if(isDual) finalRatio = Number(document.getElementById('dualMult').value) || 0.5;
+  else if(isJlpMode) finalRatio = 0.5;
+
   const tMinEl = document.getElementById('targetMin');
   const tMaxEl = document.getElementById('targetMax');
-  const tMinVal = (portfolioSize * capitalRatio) * targetMinPct / 100;
-  const tMaxVal = (portfolioSize * capitalRatio) * targetMaxPct / 100;
+  const tMinVal = (portfolioSize * finalRatio) * targetMinPct / 100;
+  const tMaxVal = (portfolioSize * finalRatio) * targetMaxPct / 100;
   if (tMinEl) tMinEl.value = isFinite(tMinVal) ? tMinVal : 0;
   if (tMaxEl) tMaxEl.value = isFinite(tMaxVal) ? tMaxVal : 0;
 }
