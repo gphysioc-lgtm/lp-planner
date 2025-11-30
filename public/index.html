@@ -296,6 +296,7 @@
     <div class="btns" style="margin-top:12px;">
       <button class="primary" id="btn">Generate Schedules</button>
       <button class="secondary" id="btnExposure" style="color:var(--accent); border-color:var(--accent);">Generate Exposure</button>
+      <button class="secondary" id="btnPnL" style="color:var(--good); border-color:var(--good);">Generate PnL</button>
       <button id="btnClear">Clear Tables</button>
     </div>
   </div>
@@ -1280,7 +1281,7 @@ function generate() {
 // --- NEW EXPOSURE SCHEDULE LOGIC ---
 function generateExposureSchedule() {
   const container = document.getElementById('resultsContainer');
-  container.innerHTML = ''; // Clear previous results
+  container.innerHTML = '';
 
   // 1. Gather Inputs
   const pmin = Number(document.getElementById('pmin').value);
@@ -1309,7 +1310,7 @@ function generateExposureSchedule() {
   const slope = (targetMaxPct - targetMinPct) / (pmax - pmin);
   
   // Loop from Pmin to Pmax
-  while(p <= pmax * (1 + stepPct/100)) { // slight buffer
+  while(p <= pmax * (1 + stepPct/100)) { 
     const currentPrice = p;
     
     // Linear Interpolation for Target %
@@ -1378,6 +1379,143 @@ function generateExposureSchedule() {
   container.appendChild(div);
 }
 
+// --- NEW PNL SCHEDULE LOGIC ---
+function generatePnLSchedule() {
+  const container = document.getElementById('resultsContainer');
+  container.innerHTML = '';
+
+  // 1. Gather Inputs
+  const pmin = Number(document.getElementById('pmin').value);
+  const pmax = Number(document.getElementById('pmax').value);
+  const p0 = Number(document.getElementById('p0').value);
+  const stepPct = Number(document.getElementById('intervalPct').value) || 1;
+  
+  const denomUsd = Number(document.getElementById('denomUsd').value) || 0;
+  const portfolioSize = Number(document.getElementById('portfolioSize').value) || 0;
+  const targetMinPct = Number(document.getElementById('targetMinPct').value) || 0;
+  const targetMaxPct = Number(document.getElementById('targetMaxPct').value) || 0;
+  const aprPct = Number(document.getElementById('aprPct').value) || 0;
+  
+  const assetSym = (document.getElementById('assetSelect').value || 'ALT').toUpperCase();
+  const denomSym = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
+
+  if (pmin <= 0 || pmax <= pmin || portfolioSize <= 0 || p0 <= 0) {
+    container.innerHTML = '<div class="card" style="color:var(--bad)">Error: Check Pmin, Pmax, P0, and Portfolio Size.</div>';
+    return;
+  }
+
+  // 2. Helper: Get Target Exposure (Denom) at specific Price
+  const slope = (targetMaxPct - targetMinPct) / (pmax - pmin);
+  const getExpAt = (px) => {
+      let pct = targetMinPct + slope * (px - pmin);
+      if(slope > 0) pct = Math.min(Math.max(pct, targetMinPct), targetMaxPct);
+      else pct = Math.min(Math.max(pct, targetMaxPct), targetMinPct);
+      return portfolioSize * (pct / 100);
+  };
+
+  // 3. Generate Price Points (Include P0 specifically for accuracy)
+  let rawPrices = [p0];
+  let p = pmin;
+  while(p <= pmax * (1 + stepPct/100)) {
+      rawPrices.push(p);
+      p = p * (1 + stepPct/100);
+      if(p > pmax && p < pmax * 1.01) p = pmax;
+  }
+  // Sort and deduplicate
+  rawPrices = [...new Set(rawPrices)].sort((a,b) => a - b);
+
+  // 4. Calculate PnL Integration
+  // We integrate: dPnL = (AssetUnits) * dPrice
+  // AssetUnits = Exposure(Denom) / Price
+  const data = [];
+  const startIdx = rawPrices.indexOf(p0);
+  
+  // Calculate Units held at every point
+  const points = rawPrices.map(px => {
+      const expDenom = getExpAt(px);
+      return {
+          px: px,
+          units: expDenom / px, // Units of ALT
+          expDenom: expDenom
+      };
+  });
+
+  // Set PnL = 0 at P0
+  points[startIdx].pnl = 0;
+
+  // Integrate Upwards from P0
+  for(let i = startIdx + 1; i < points.length; i++) {
+      const prev = points[i-1];
+      const curr = points[i];
+      const avgUnits = (prev.units + curr.units) / 2;
+      const dP = curr.px - prev.px;
+      curr.pnl = prev.pnl + (avgUnits * dP);
+  }
+
+  // Integrate Downwards from P0
+  for(let i = startIdx - 1; i >= 0; i--) {
+      const prev = points[i+1]; // "prev" here is the higher price we just came from
+      const curr = points[i];
+      const avgUnits = (prev.units + curr.units) / 2;
+      const dP = curr.px - prev.px; // Negative
+      curr.pnl = prev.pnl + (avgUnits * dP);
+  }
+
+  // 5. APR Calc
+  const dailyYield = (portfolioSize * (aprPct/100)) / 365;
+
+  // 6. Render
+  const html = `
+    <div class="section-header">Projected PnL Schedule</div>
+    <div class="card">
+      <div class="footnote" style="margin-bottom:12px;">
+        PnL based on continuous rebalancing to Target Exposure.<br>
+        Daily Yield (APR ${aprPct}%): <b>${fmt(dailyYield, 5)} ${denomSym}</b>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th style="text-align:left">Price (${assetSym}/${denomSym})</th>
+              <th>Target Exp (${denomSym})</th>
+              <th>PnL (${denomSym})</th>
+              <th>PnL (USD)</th>
+              <th>Days to Break Even</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${points.map(r => {
+              const isP0 = Math.abs(r.px - p0) < 1e-9;
+              const pnlUsd = r.pnl * denomUsd;
+              let daysStr = '–';
+              
+              if (r.pnl < 0 && dailyYield > 0) {
+                  const days = Math.abs(r.pnl) / dailyYield;
+                  daysStr = days.toFixed(1) + ' d';
+              }
+              
+              const rowStyle = isP0 ? 'background:rgba(255,255,255,0.05);' : '';
+              const pnlColor = r.pnl >= 0 ? 'var(--good)' : 'var(--bad)';
+
+              return `<tr style="${rowStyle}">
+                <td style="text-align:left; color:${isP0?'var(--accent)':'inherit'}">${fmt(r.px, 8)} ${isP0?'(P₀)':''}</td>
+                <td>${fmt(r.expDenom, 4)}</td>
+                <td style="color:${pnlColor}; font-weight:600;">${r.pnl > 0 ? '+':''}${fmt(r.pnl, 5)}</td>
+                <td style="color:${pnlColor}">${r.pnl > 0 ? '+':''}$${fmt(pnlUsd, 2)}</td>
+                <td style="color:var(--warn);">${daysStr}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  container.appendChild(div);
+}
+
 (function(){
   const assetSel = document.getElementById('assetSelect');
   const denomSel = document.getElementById('denomSelect');
@@ -1391,9 +1529,12 @@ function generateExposureSchedule() {
   const btn = document.getElementById('btn');
   if(btn) btn.addEventListener('click', generate);
   
-  // Attach New Listener
+  // Attach New Listeners
   const btnExp = document.getElementById('btnExposure');
   if(btnExp) btnExp.addEventListener('click', generateExposureSchedule);
+
+  const btnPnL = document.getElementById('btnPnL');
+  if(btnPnL) btnPnL.addEventListener('click', generatePnLSchedule);
 
   const btnClear = document.getElementById('btnClear');
   if(btnClear) btnClear.addEventListener('click', function(){
