@@ -289,7 +289,11 @@
         </select>
       </div>
       <div>
-        <label>LP APR on total capital (%)</label>
+        <label style="color:var(--warn)">Active Capital Util. (%)</label>
+        <input type="number" id="activeLiquidityPct" step="1" value="100" title="What % of the portfolio is deployed in tight ranges?">
+      </div>
+      <div>
+        <label>APR on Active Capital (%)</label>
         <input type="number" id="aprPct" step="0.01" value="20">
       </div>
       <div>
@@ -1102,13 +1106,18 @@ function generateExposureSchedule() {
   const div = document.createElement('div'); div.innerHTML = html; container.appendChild(div);
 }
 
-// --- NEW PNL SCHEDULE LOGIC ---
+// --- NEW PNL SCHEDULE LOGIC (UPDATED FOR EFFECTIVE APR) ---
 function generatePnLSchedule() {
   const container = document.getElementById('resultsContainer'); container.innerHTML = '';
   const pmin = Number(document.getElementById('pmin').value), pmax = Number(document.getElementById('pmax').value), p0 = Number(document.getElementById('p0').value), stepPct = Number(document.getElementById('intervalPct').value) || 1;
   const denomUsd = Number(document.getElementById('denomUsd').value) || 0, portfolioSize = Number(document.getElementById('portfolioSize').value) || 0;
   const targetMinPct = Number(document.getElementById('targetMinPct').value) || 0, targetMaxPct = Number(document.getElementById('targetMaxPct').value) || 0;
-  const distMode = document.getElementById('distMode').value, aprPct = Number(document.getElementById('aprPct').value) || 0;
+  const distMode = document.getElementById('distMode').value;
+  
+  // APR INPUTS
+  const aprPct = Number(document.getElementById('aprPct').value) || 0;
+  const activePct = Number(document.getElementById('activeLiquidityPct').value) || 100;
+  
   const assetSym = (document.getElementById('assetSelect').value || 'ALT').toUpperCase(), denomSym = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
   if (pmin <= 0 || pmax <= pmin || portfolioSize <= 0 || p0 <= 0) return;
   
@@ -1123,8 +1132,12 @@ function generatePnLSchedule() {
   points[startIdx].pnl = 0;
   for(let i = startIdx + 1; i < points.length; i++) { const prev = points[i-1], curr = points[i]; curr.pnl = prev.pnl + ((prev.units + curr.units) / 2 * (curr.px - prev.px)); }
   for(let i = startIdx - 1; i >= 0; i--) { const prev = points[i+1], curr = points[i]; curr.pnl = prev.pnl + ((prev.units + curr.units) / 2 * (curr.px - prev.px)); }
-  const dailyYield = (portfolioSize * (aprPct/100)) / 365;
-  const html = `<div class="section-header">Projected PnL Schedule</div><div class="card"><div class="footnote" style="margin-bottom:12px;">Daily Yield (APR ${aprPct}%): <b>${fmt(dailyYield, 5)} ${denomSym}</b></div><div class="scroll"><table><thead><tr><th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Target Exp (${denomSym})</th><th>PnL (${denomSym})</th><th>PnL (USD)</th><th>Days to Break Even</th></tr></thead><tbody>${points.map(r => {
+  
+  // Effective APR Logic
+  const effectiveApr = aprPct * (activePct / 100);
+  const dailyYield = (portfolioSize * (effectiveApr/100)) / 365;
+  
+  const html = `<div class="section-header">Projected PnL Schedule</div><div class="card"><div class="footnote" style="margin-bottom:12px;">Effective APR: <b>${fmt(effectiveApr, 2)}%</b> (Based on ${fmt(aprPct,0)}% APR on ${activePct}% Active Capital)<br>Daily Yield: <b>${fmt(dailyYield, 5)} ${denomSym}</b></div><div class="scroll"><table><thead><tr><th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Target Exp (${denomSym})</th><th>PnL (${denomSym})</th><th>PnL (USD)</th><th>Days to Break Even</th></tr></thead><tbody>${points.map(r => {
        const isP0 = Math.abs(r.px - p0) < 1e-9;
        let daysStr = (r.pnl < 0 && dailyYield > 0) ? (Math.abs(r.pnl)/dailyYield).toFixed(1) + ' d' : '–';
        const pnlColor = r.pnl >= 0 ? 'var(--good)' : 'var(--bad)';
