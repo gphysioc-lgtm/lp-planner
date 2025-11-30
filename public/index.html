@@ -98,14 +98,20 @@
     margin: 24px 0 12px; font-size: 16px; font-weight: 700; color: var(--accent);
     display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #17202d; padding-bottom: 8px;
   }
-  .sub-col { font-size: 10px; color: var(--muted); }
   
   .summary-box {
-    display: flex; gap: 20px; padding: 12px; background: #0e1622; 
+    padding: 12px; background: #0e1622; 
     border: 1px solid #1a2a3d; border-radius: 12px; margin-bottom: 14px;
+    display: flex; flex-direction: column; gap: 12px;
   }
-  .summary-item label { color: var(--muted); font-size: 10px; text-transform: uppercase; margin:0 0 2px 0;}
-  .summary-item div { font-size: 14px; font-weight: 600; color: var(--ink); }
+  .summary-row {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+    padding-bottom: 8px; border-bottom: 1px solid #1a2433;
+  }
+  .summary-row:last-child { border-bottom: none; padding-bottom: 0; }
+  
+  .summary-item label { color: var(--muted); font-size: 10px; text-transform: uppercase; margin:0 0 2px 0; display:block;}
+  .summary-item div { font-size: 13px; font-weight: 600; color: var(--ink); }
   
   #debugBox {
     margin-top: 10px;
@@ -856,36 +862,85 @@ function renderTripleAggregateTable(container, strategies) {
   container.appendChild(div);
 }
 
-// --- SIMPLIFIED RENDER FUNCTION FOR SCHEDULES ---
+// --- UPDATED RENDER FUNCTION: SORT + HEADER STATS ---
 function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, assetSymbol, lpId) {
   if(!strategyData) return;
   const { rows, kpi } = strategyData;
   const dec = parseInt(document.getElementById('dec').value || '4', 10);
   
-  // Calculate Totals specifically for the header summary
-  let aboveAssetSum = 0; // Usually SOL
-  let belowQuoteSum = 0; // Usually BTC
-  
+  // 1. Sort Rows: Bottom (Low Price) to Top (High Price)
+  rows.sort((a, b) => a.pa - b.pa);
+
+  // 2. Calculate Totals
+  let aboveAssetSum = 0; // Total SOL units
+  let belowQuoteSum = 0; // Total BTC units
+  let aboveDenomSum = 0; // Value in Denom terms (for Above)
+  let belowDenomSum = 0; // Value in Denom terms (for Below)
+
   rows.forEach(r => {
-      if(r.type === 'Above') aboveAssetSum += r.altUnitsAbove;
-      if(r.type === 'Below') belowQuoteSum += r.deployUSD; // This is Quote Amount
+      if(r.type === 'Above') {
+          aboveAssetSum += r.altUnitsAbove;
+          aboveDenomSum += r.deployAltUsd; // deployAltUsd is the Denom equivalent
+      }
+      if(r.type === 'Below') {
+          belowQuoteSum += r.deployUSD;
+          belowDenomSum += r.deployUSD;
+      }
   });
+
+  const totalUsdAbove = aboveDenomSum * denomUsd;
+  const totalUsdBelow = belowDenomSum * denomUsd;
+
+  // 3. Averages per band
+  const avgUsdAbove = kpi.Nup > 0 ? totalUsdAbove / kpi.Nup : 0;
+  const avgUsdBelow = kpi.Ndown > 0 ? totalUsdBelow / kpi.Ndown : 0;
+  const avgAssetAbove = kpi.Nup > 0 ? aboveAssetSum / kpi.Nup : 0;
+  const avgQuoteBelow = kpi.Ndown > 0 ? belowQuoteSum / kpi.Ndown : 0;
 
   const sectionHtml = `
     <div class="section-header">${title}</div>
     
     <div class="summary-box">
-       <div class="summary-item">
-          <label>Total Required Above</label>
-          <div style="color:var(--accent)">${fmt(aboveAssetSum, 4)} ${assetSymbol}</div>
+       <div class="summary-row">
+          <div class="summary-item">
+             <label>Total Asset Above</label>
+             <div style="color:var(--accent)">${fmt(aboveAssetSum, 4)} ${assetSymbol}</div>
+          </div>
+          <div class="summary-item">
+             <label>Total USD Above</label>
+             <div style="color:var(--accent)">$${fmt(totalUsdAbove, 2)}</div>
+          </div>
+          <div class="summary-item">
+             <label>Avg ${assetSymbol} / Band</label>
+             <div>${fmt(avgAssetAbove, 4)}</div>
+          </div>
+          <div class="summary-item">
+             <label>Avg USD / Band (Above)</label>
+             <div>$${fmt(avgUsdAbove, 2)}</div>
+          </div>
        </div>
-       <div class="summary-item">
-          <label>Total Required Below</label>
-          <div style="color:var(--good)">${fmt(belowQuoteSum, 6)} ${denomSymbol}</div>
+       
+       <div class="summary-row">
+          <div class="summary-item">
+             <label>Total Quote Below</label>
+             <div style="color:var(--good)">${fmt(belowQuoteSum, 6)} ${denomSymbol}</div>
+          </div>
+          <div class="summary-item">
+             <label>Total USD Below</label>
+             <div style="color:var(--good)">$${fmt(totalUsdBelow, 2)}</div>
+          </div>
+          <div class="summary-item">
+             <label>Avg ${denomSymbol} / Band</label>
+             <div>${fmt(avgQuoteBelow, 4)}</div>
+          </div>
+          <div class="summary-item">
+             <label>Avg USD / Band (Below)</label>
+             <div>$${fmt(avgUsdBelow, 2)}</div>
+          </div>
        </div>
-       <div class="summary-item">
-          <label>Intervals</label>
-          <div>${kpi.Ndown} ↓ / ${kpi.Nup} ↑</div>
+       
+       <div style="margin-top:4px; font-size:11px; color:var(--muted)">
+          Intervals: ${kpi.Ndown} Below / ${kpi.Nup} Above
        </div>
     </div>
 
