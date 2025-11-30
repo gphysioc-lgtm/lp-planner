@@ -263,8 +263,8 @@
       <div>
         <label>Distribution Mode</label>
         <select id="distMode">
-          <option value="value">Equal Value (Standard)</option>
           <option value="uniform" selected>Equal Units (Linear)</option>
+          <option value="value">Equal Value (Standard)</option>
         </select>
       </div>
       <div>
@@ -698,21 +698,14 @@ function calculateStrategy(params, manualBands) {
   let perAltUsdSchedule = 0;
   let constUnitsAbove = 0;
   
-  // Logic for Distribution Mode (Value vs Units)
-  // Standard (Value) Mode: Constant BTC Value per band
-  // Uniform (Linear) Mode: Constant SOL Units per band
-  
   if (Nup > 0) {
       if (distMode === 'uniform') {
-          // Linear Exposure: We need equal UNITS of Asset (SOL).
-          // Exposure reduction from selling U units at P = U * P.
-          // Total Reduction = Sum(U * P_execution) = U * Sum(P_execution)
-          // U = Total_Reduction / Sum(P_execution)
+          // Linear Exposure: Equal UNITS of Asset (SOL).
           let sumSqrtP = 0;
           for(const b of bands.up) sumSqrtP += Math.sqrt(b.pa * b.pb);
+          // UnitAmt = Target / Sum(Price)
           constUnitsAbove = sumSqrtP > 0 ? (needMoreNegativeAtMax / sumSqrtP) : 0;
           
-          // Calculate implied Total Value for consistency with other vars
           aboveTotalScheduled = 0; 
           for(const b of bands.up) aboveTotalScheduled += constUnitsAbove * Math.sqrt(b.pa * b.pb);
       } else {
@@ -728,7 +721,6 @@ function calculateStrategy(params, manualBands) {
   let holdingsUsed = 0;
   let toBuyShort = 0;
 
-  // Check liquidity
   let totalReq = aboveTotalScheduled;
   if(currentE > 0 && targetMax === 0){
     holdingsUsed = Math.min(totalReq, holdingsAvail);
@@ -742,7 +734,6 @@ function calculateStrategy(params, manualBands) {
     }
   }
   
-  // Re-adjust per-band amounts if constrained by holdings
   let ratio = (aboveTotalScheduled > 0) ? (totalReq / aboveTotalScheduled) : 0;
   if(distMode === 'uniform') constUnitsAbove *= ratio;
   else perAltUsdSchedule *= ratio;
@@ -772,7 +763,6 @@ function calculateStrategy(params, manualBands) {
        if (distMode === 'uniform') {
           // Equal Units
           altUnitsAbove = constUnitsAbove;
-          // Calculate Value of this band (in BTC terms)
           deployAltUsd = altUnitsAbove * Math.sqrt(b.pa * b.pb);
        } else {
           // Equal Value
@@ -802,11 +792,10 @@ function calculateStrategy(params, manualBands) {
     const baseE = currentE * scaleFactorAt(boundaryPx);
     const netAtBoundary = isDown ? (baseE + cumBelowValue) : (baseE - cumAboveSale);
     
-    // If not calculated above (standard mode), calculate units now
     let finalUnits = 0;
     if(!isDown) {
         if(distMode === 'uniform') finalUnits = constUnitsAbove;
-        else finalUnits = (deployAltUsd > 0) ? (deployAltUsd / b.pa) : 0; // Approx unit calc for standard
+        else finalUnits = (deployAltUsd > 0) ? (deployAltUsd / b.pa) : 0; 
     }
 
     rows.push({
@@ -1203,6 +1192,27 @@ function generate() {
   if (tMaxEl) tMaxEl.value = isFinite(tMaxVal) ? tMaxVal : 0;
 }
 
+// --- HELPER FOR PROJECTIONS ---
+function getUnitsHeldAt(px, pmin, pmax, portSize, tMinPct, tMaxPct, mode) {
+    const valMin = portSize * (tMinPct / 100);
+    const valMax = portSize * (tMaxPct / 100);
+    const uMin = valMin / pmin;
+    const uMax = valMax / pmax;
+    const p = Math.max(pmin, Math.min(px, pmax));
+
+    if (mode === 'uniform') {
+        const slope = (uMax - uMin) / (pmax - pmin);
+        return uMin + slope * (p - pmin);
+    } else {
+        if (pmax <= pmin) return uMin;
+        const num = uMin - uMax;
+        const den = Math.log(pmax / pmin);
+        if (den === 0) return uMin;
+        const vConst = num / den;
+        return uMin - vConst * Math.log(p / pmin);
+    }
+}
+
 // --- NEW EXPOSURE SCHEDULE LOGIC ---
 function generateExposureSchedule() {
   const container = document.getElementById('resultsContainer');
@@ -1214,6 +1224,7 @@ function generateExposureSchedule() {
   const portfolioSize = Number(document.getElementById('portfolioSize').value) || 0;
   const targetMinPct = Number(document.getElementById('targetMinPct').value) || 0;
   const targetMaxPct = Number(document.getElementById('targetMaxPct').value) || 0;
+  const distMode = document.getElementById('distMode').value;
   const assetSym = (document.getElementById('assetSelect').value || 'ALT').toUpperCase();
   const denomSym = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
 
@@ -1223,15 +1234,17 @@ function generateExposureSchedule() {
   }
   const rows = [];
   let p = pmin;
-  const slope = (targetMaxPct - targetMinPct) / (pmax - pmin);
   while(p <= pmax * (1 + stepPct/100)) { 
     const currentPrice = p;
-    let netExpPct = targetMinPct + slope * (currentPrice - pmin);
-    if(slope > 0) netExpPct = Math.min(Math.max(netExpPct, targetMinPct), targetMaxPct);
-    else netExpPct = Math.min(Math.max(netExpPct, targetMaxPct), targetMinPct);
-    const netExpDenom = portfolioSize * (netExpPct / 100);
+    // Calculate Units held at this price based on mode
+    const units = getUnitsHeldAt(currentPrice, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode);
+    
+    // Convert back to exposure metrics
+    const netExpDenom = units * currentPrice;
+    const netExpPct = (netExpDenom / portfolioSize) * 100;
     const netExpUsd = netExpDenom * denomUsd;
     const priceUsd = currentPrice * denomUsd;
+    
     rows.push({ pricePair: currentPrice, priceUsd: priceUsd, expPct: netExpPct, expDenom: netExpDenom, expUsd: netExpUsd });
     if(p >= pmax) break; 
     p = p * (1 + stepPct/100);
@@ -1265,6 +1278,7 @@ function generatePnLSchedule() {
   const portfolioSize = Number(document.getElementById('portfolioSize').value) || 0;
   const targetMinPct = Number(document.getElementById('targetMinPct').value) || 0;
   const targetMaxPct = Number(document.getElementById('targetMaxPct').value) || 0;
+  const distMode = document.getElementById('distMode').value;
   const aprPct = Number(document.getElementById('aprPct').value) || 0;
   const assetSym = (document.getElementById('assetSelect').value || 'ALT').toUpperCase();
   const denomSym = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
@@ -1273,13 +1287,7 @@ function generatePnLSchedule() {
     container.innerHTML = '<div class="card" style="color:var(--bad)">Error: Check Pmin, Pmax, P0, and Portfolio Size.</div>';
     return;
   }
-  const slope = (targetMaxPct - targetMinPct) / (pmax - pmin);
-  const getExpAt = (px) => {
-      let pct = targetMinPct + slope * (px - pmin);
-      if(slope > 0) pct = Math.min(Math.max(pct, targetMinPct), targetMaxPct);
-      else pct = Math.min(Math.max(pct, targetMaxPct), targetMinPct);
-      return portfolioSize * (pct / 100);
-  };
+  
   let rawPrices = [p0];
   let p = pmin;
   while(p <= pmax * (1 + stepPct/100)) {
@@ -1287,8 +1295,13 @@ function generatePnLSchedule() {
       if(p > pmax && p < pmax * 1.01) p = pmax;
   }
   rawPrices = [...new Set(rawPrices)].sort((a,b) => a - b);
+  
   const startIdx = rawPrices.indexOf(p0);
-  const points = rawPrices.map(px => ({ px: px, units: getExpAt(px) / px, expDenom: getExpAt(px) }));
+  const points = rawPrices.map(px => {
+      const units = getUnitsHeldAt(px, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode);
+      return { px: px, units: units, expDenom: units * px };
+  });
+  
   points[startIdx].pnl = 0;
   for(let i = startIdx + 1; i < points.length; i++) {
       const prev = points[i-1], curr = points[i];
