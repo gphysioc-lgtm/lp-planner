@@ -261,10 +261,10 @@
         <input type="number" id="dec" step="1" value="4">
       </div>
       <div>
-        <label>Assume current exposure scales with price?</label>
-        <select id="scaleMode">
-          <option value="scale">Scale linearly with price (default)</option>
-          <option value="noscale">Do not scale current exposure</option>
+        <label>Distribution Mode</label>
+        <select id="distMode">
+          <option value="value">Equal Value (Standard)</option>
+          <option value="uniform">Equal Units (Linear)</option>
         </select>
       </div>
       <div>
@@ -279,8 +279,15 @@
         </select>
       </div>
     </div>
-
+    
     <div class="row4" style="margin-top:6px;">
+       <div>
+        <label>Assume current exposure scales with price?</label>
+        <select id="scaleMode">
+          <option value="scale">Scale linearly with price (default)</option>
+          <option value="noscale">Do not scale current exposure</option>
+        </select>
+      </div>
       <div>
         <label>LP APR on total capital (%)</label>
         <input type="number" id="aprPct" step="0.01" value="20">
@@ -650,7 +657,7 @@ function calculateStrategy(params, manualBands) {
     pmin, pmax, p0, stepPct,
     portfolioSize, targetMinPct, targetMaxPct, currentE,
     denomSymbol, denomUsd, assetSymbol,
-    scaleMode, aprPct, maxDays
+    scaleMode, aprPct, maxDays, distMode
   } = params;
 
   if(!manualBands && !(pmin>0 && pmax>pmin && p0>0)) return null;
@@ -682,32 +689,64 @@ function calculateStrategy(params, manualBands) {
     sumRup += b.r_up;
   }
 
+  // Calculate needed exposure change for Above (Ask) side
   const effectivePmax = (pmax > 0) ? pmax : (bands.up.length > 0 ? bands.up[bands.up.length-1].pb : 0);
   const currentAtMax = currentE * scaleFactorAt(effectivePmax);
   const needMoreNegativeAtMax = currentAtMax - targetMax;
-  const perAltUsdNeeded = sumRup>0 ? (needMoreNegativeAtMax / sumRup) : 0;
-  let aboveTotalNeeded = perAltUsdNeeded * Nup;
+  
+  let aboveTotalScheduled = 0;
+  let perAltUsdSchedule = 0;
+  let constUnitsAbove = 0;
+  
+  // Logic for Distribution Mode (Value vs Units)
+  // Standard (Value) Mode: Constant BTC Value per band
+  // Uniform (Linear) Mode: Constant SOL Units per band
+  
+  if (Nup > 0) {
+      if (distMode === 'uniform') {
+          // Linear Exposure: We need equal UNITS of Asset (SOL).
+          // Exposure reduction from selling U units at P = U * P.
+          // Total Reduction = Sum(U * P_execution) = U * Sum(P_execution)
+          // U = Total_Reduction / Sum(P_execution)
+          let sumSqrtP = 0;
+          for(const b of bands.up) sumSqrtP += Math.sqrt(b.pa * b.pb);
+          constUnitsAbove = sumSqrtP > 0 ? (needMoreNegativeAtMax / sumSqrtP) : 0;
+          
+          // Calculate implied Total Value for consistency with other vars
+          aboveTotalScheduled = 0; 
+          for(const b of bands.up) aboveTotalScheduled += constUnitsAbove * Math.sqrt(b.pa * b.pb);
+      } else {
+         // Standard Mode: Constant Value
+         const perAltUsdNeeded = sumRup>0 ? (needMoreNegativeAtMax / sumRup) : 0;
+         aboveTotalScheduled = perAltUsdNeeded * Nup;
+         perAltUsdSchedule = aboveTotalScheduled / Nup;
+      }
+  }
 
   let holdingsAvail = Math.max(currentE, 0);
   let buyShortAllowed = (targetMax < 0);
-  let aboveTotalScheduled = aboveTotalNeeded;
   let holdingsUsed = 0;
   let toBuyShort = 0;
 
-  if(Nup === 0) aboveTotalScheduled = 0;
+  // Check liquidity
+  let totalReq = aboveTotalScheduled;
   if(currentE > 0 && targetMax === 0){
-    aboveTotalScheduled = Math.min(aboveTotalNeeded, holdingsAvail);
-    holdingsUsed = aboveTotalScheduled;
+    holdingsUsed = Math.min(totalReq, holdingsAvail);
+    if(holdingsUsed < totalReq && !buyShortAllowed) totalReq = holdingsUsed; 
   } else {
-    holdingsUsed = Math.min(holdingsAvail, aboveTotalNeeded);
-    toBuyShort = Math.max(0, aboveTotalNeeded - holdingsUsed);
+    holdingsUsed = Math.min(holdingsAvail, totalReq);
+    toBuyShort = Math.max(0, totalReq - holdingsUsed);
     if(!buyShortAllowed){
-      aboveTotalScheduled = holdingsUsed;
+      totalReq = holdingsUsed;
       toBuyShort = 0;
     }
   }
+  
+  // Re-adjust per-band amounts if constrained by holdings
+  let ratio = (aboveTotalScheduled > 0) ? (totalReq / aboveTotalScheduled) : 0;
+  if(distMode === 'uniform') constUnitsAbove *= ratio;
+  else perAltUsdSchedule *= ratio;
 
-  const perAltUsdSchedule = Nup>0 ? (aboveTotalScheduled / Nup) : 0;
   const rows = [];
   const ordered = [...bands.down, ...bands.up];
   
@@ -729,43 +768,58 @@ function calculateStrategy(params, manualBands) {
       belowTotal += deployUSD;
       cumBelowValue += valueAtPa;
     } else {
-      if(aboveTotal < aboveTotalScheduled - 1e-12){
-        deployAltUsd = Math.min(perAltUsdSchedule, aboveTotalScheduled - aboveTotal);
-        aboveTotal += deployAltUsd;
-        
-        let useHold = 0;
-        if(holdingsRemaining > 0){
-          useHold = Math.min(deployAltUsd, holdingsRemaining);
-          holdingsRemaining -= useHold;
-          sourceTag = '<span class="tag hold">Holdings</span>';
-          if(deployAltUsd - useHold > 1e-12){
-            sourceTag += ' + <span class="tag source">Buy+Short</span>';
+       // Ask Side
+       if (distMode === 'uniform') {
+          // Equal Units
+          altUnitsAbove = constUnitsAbove;
+          // Calculate Value of this band (in BTC terms)
+          deployAltUsd = altUnitsAbove * Math.sqrt(b.pa * b.pb);
+       } else {
+          // Equal Value
+          deployAltUsd = perAltUsdSchedule;
+       }
+
+       if(aboveTotal < totalReq - 1e-12){
+          aboveTotal += deployAltUsd;
+          let useHold = 0;
+          if(holdingsRemaining > 0){
+            useHold = Math.min(deployAltUsd, holdingsRemaining);
+            holdingsRemaining -= useHold;
+            sourceTag = '<span class="tag hold">Holdings</span>';
+            if(deployAltUsd - useHold > 1e-12){
+              sourceTag += ' + <span class="tag source">Buy+Short</span>';
+              if(startBuyShortPx===null) startBuyShortPx = b.pa;
+            }
+          } else {
+            sourceTag = '<span class="tag source">Buy+Short</span>';
             if(startBuyShortPx===null) startBuyShortPx = b.pa;
           }
-        } else {
-          sourceTag = '<span class="tag source">Buy+Short</span>';
-          if(startBuyShortPx===null) startBuyShortPx = b.pa;
-        }
-        saleAtPb = deployAltUsd * rup;
-        cumAboveSale += saleAtPb;
-      }
+          saleAtPb = deployAltUsd * rup;
+          cumAboveSale += saleAtPb;
+       }
     }
     
     const baseE = currentE * scaleFactorAt(boundaryPx);
     const netAtBoundary = isDown ? (baseE + cumBelowValue) : (baseE - cumAboveSale);
-    const altUnitsAbove = (!isDown && deployAltUsd>0) ? (deployAltUsd / b.pa) : 0;
+    
+    // If not calculated above (standard mode), calculate units now
+    let finalUnits = 0;
+    if(!isDown) {
+        if(distMode === 'uniform') finalUnits = constUnitsAbove;
+        else finalUnits = (deployAltUsd > 0) ? (deployAltUsd / b.pa) : 0; // Approx unit calc for standard
+    }
 
     rows.push({
       bandIdx: b.origIdx || (idx + 1), 
       pa: b.pa, pb: b.pb, type: b.type,
       deployUSD, deployAltUsd, sourceTag,
-      altUnitsAbove, netAtBoundary
+      altUnitsAbove: finalUnits, netAtBoundary
     });
   });
 
   return {
     rows,
-    kpi: { Ndown, Nup, belowTotal, aboveTotal: aboveTotalScheduled },
+    kpi: { Ndown, Nup, belowTotal, aboveTotal: totalReq },
     rawBands: bands 
   };
 }
@@ -903,39 +957,39 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
     <div class="summary-box">
        <div class="summary-row">
           <div class="summary-item">
-             <label>Total Asset Above</label>
-             <div style="color:var(--accent)">${fmt(aboveAssetSum, 4)} ${assetSymbol}</div>
+             <label>${assetSymbol} / Band (Above)</label>
+             <div style="color:var(--accent)">${fmt(avgAssetAbove, 4)}</div>
+          </div>
+          <div class="summary-item">
+             <label>USD Value / Band (Above)</label>
+             <div style="color:var(--accent)">$${fmt(avgUsdAbove, 2)}</div>
+          </div>
+          <div class="summary-item">
+             <label>Total ${assetSymbol} Above</label>
+             <div>${fmt(aboveAssetSum, 4)}</div>
           </div>
           <div class="summary-item">
              <label>Total USD Above</label>
-             <div style="color:var(--accent)">$${fmt(totalUsdAbove, 2)}</div>
-          </div>
-          <div class="summary-item">
-             <label>Avg ${assetSymbol} / Band</label>
-             <div>${fmt(avgAssetAbove, 4)}</div>
-          </div>
-          <div class="summary-item">
-             <label>Avg USD / Band (Above)</label>
-             <div>$${fmt(avgUsdAbove, 2)}</div>
+             <div>$${fmt(totalUsdAbove, 2)}</div>
           </div>
        </div>
        
        <div class="summary-row">
           <div class="summary-item">
-             <label>Total Quote Below</label>
-             <div style="color:var(--good)">${fmt(belowQuoteSum, 6)} ${denomSymbol}</div>
+             <label>${denomSymbol} / Band (Below)</label>
+             <div style="color:var(--good)">${fmt(avgQuoteBelow, 4)}</div>
+          </div>
+          <div class="summary-item">
+             <label>USD Value / Band (Below)</label>
+             <div style="color:var(--good)">$${fmt(avgUsdBelow, 2)}</div>
+          </div>
+          <div class="summary-item">
+             <label>Total ${denomSymbol} Below</label>
+             <div>${fmt(belowQuoteSum, 4)}</div>
           </div>
           <div class="summary-item">
              <label>Total USD Below</label>
-             <div style="color:var(--good)">$${fmt(totalUsdBelow, 2)}</div>
-          </div>
-          <div class="summary-item">
-             <label>Avg ${denomSymbol} / Band</label>
-             <div>${fmt(avgQuoteBelow, 4)}</div>
-          </div>
-          <div class="summary-item">
-             <label>Avg USD / Band (Below)</label>
-             <div>$${fmt(avgUsdBelow, 2)}</div>
+             <div>$${fmt(totalUsdBelow, 2)}</div>
           </div>
        </div>
        
@@ -1019,6 +1073,7 @@ function generate() {
   const currentE = Number(document.getElementById('currentE').value);
   const targetMinPct = Number(document.getElementById('targetMinPct').value);
   const targetMaxPct = Number(document.getElementById('targetMaxPct').value);
+  const distMode = document.getElementById('distMode').value;
   
   const isDual = document.getElementById('dualLpMode').checked;
   const isJlpMode = document.getElementById('jlpStrategyMode').checked;
@@ -1040,7 +1095,7 @@ function generate() {
             targetMinPct, targetMaxPct,
             denomSymbol: 'USD', denomUsd: 1, assetSymbol: assetSymbol,
             scaleMode: document.getElementById('scaleMode').value,
-            aprPct: 0, maxDays: 0
+            aprPct: 0, maxDays: 0, distMode
         };
         
         const refData = calculateStrategy(refParams);
@@ -1083,7 +1138,7 @@ function generate() {
         targetMinPct, targetMaxPct,
         denomSymbol, denomUsd, assetSymbol,
         scaleMode: document.getElementById('scaleMode').value,
-        aprPct: 0, maxDays: 0
+        aprPct: 0, maxDays: 0, distMode
      };
      
      if(isJlpMode) {
