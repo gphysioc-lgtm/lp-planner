@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>CL LP Exposure Planner — Quote Asset Notional</title>
+<title>CL LP Exposure Planner — Capital Deployment</title>
 <style>
   :root {
     --bg:#0b0f14; --card:#101620; --ink:#e8eef6; --muted:#9fb1c7;
@@ -87,16 +87,6 @@
   }
   .scroll { overflow:auto; border:1px solid #17202d; border-radius:14px; max-height:60vh; }
   .footnote { margin-top:8px; font-size:11px; color:#95a9c2; }
-  .kpis {
-    display:grid; grid-template-columns:repeat(3,1fr);
-    gap:8px; margin-top:8px;
-  }
-  .kpi {
-    padding:10px; border-radius:14px; border:1px solid #1a2a3d;
-    background:#0e1622;
-  }
-  .kpi b { display:block; font-size:11px; color:#a6bdd9; margin-bottom:3px; }
-  .kpi div { font-size:15px; font-weight:600; }
   .tag {
     display:inline-block; font-size:10px; padding:2px 6px;
     border-radius:999px; border:1px solid #284d6f; background:#0d1a27;
@@ -109,6 +99,13 @@
     display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #17202d; padding-bottom: 8px;
   }
   .sub-col { font-size: 10px; color: var(--muted); }
+  
+  .summary-box {
+    display: flex; gap: 20px; padding: 12px; background: #0e1622; 
+    border: 1px solid #1a2a3d; border-radius: 12px; margin-bottom: 14px;
+  }
+  .summary-item label { color: var(--muted); font-size: 10px; text-transform: uppercase; margin:0 0 2px 0;}
+  .summary-item div { font-size: 14px; font-weight: 600; color: var(--ink); }
   
   #debugBox {
     margin-top: 10px;
@@ -128,7 +125,7 @@
 </head>
 <body>
 <header>
-  <h1>CL LP Exposure Planner — Quote Asset Notional</h1>
+  <h1>CL LP Exposure Planner — Capital Deployment</h1>
 </header>
 
 <div class="wrap">
@@ -449,10 +446,7 @@ function triggerAutoFetch() {
 }
 
 
-// --- PRICE FETCHING (Split Strategy for Robustness) ---
-// 1. Fetch Main Asset + Denom (Critical)
-// 2. Fetch JLP (Background, non-critical)
-
+// --- PRICE FETCHING ---
 async function fetchPriceBatch(ids) {
     if(!ids) return {};
     try {
@@ -493,7 +487,6 @@ async function autoFetchPrices(assetSym, denomSym){
         document.getElementById('denomUsd').value = 1;
     }
 
-    // --- STEP 1: Main Fetch (Asset + Denom) ---
     let mainIds = (!isUsd && denomId) ? denomId : '';
     if(assetId) mainIds += (mainIds ? ',' : '') + assetId;
     
@@ -504,7 +497,6 @@ async function autoFetchPrices(assetSym, denomSym){
         mainData = await fetchPriceBatch(mainIds);
         if(mainData) {
             success = true;
-            // Update UI
             if(!isUsd && mainData[denomId]?.usd) {
                 document.getElementById('denomUsd').value = mainData[denomId].usd;
             }
@@ -513,13 +505,10 @@ async function autoFetchPrices(assetSym, denomSym){
             }
         }
     } else {
-        // Just USD mode with no asset? 
         success = true; 
     }
 
-    // --- STEP 2: JLP Fetch (Separate to avoid 500 error on huge query) ---
     if(jlpId) {
-        // Run in background, don't await blocking logic
         fetchPriceBatch(jlpId).then(jlpData => {
             if(jlpData && jlpData[jlpId]?.usd) {
                 document.getElementById('jlpUsd').value = jlpData[jlpId].usd;
@@ -609,17 +598,12 @@ async function loadAssetConfig(symbol){
       }
     }
     
-    // FETCH PRICES
     const success = await autoFetchPrices(symbol, denomSym);
     
-    // SMART LOAD: Only if API failed (returned false), use sheet P0
-    // Check current Alt USD. If 0, we assume failure.
     const currentAlt = Number(document.getElementById('altUsd').value || 0);
-    
     if((!success || currentAlt === 0) && typeof data.p0 === 'number') {
        document.getElementById('p0').value = data.p0;
-       updateUsdFromP0(); // Calc USD from P0
-       console.log("Using Sheet P0 fallback");
+       updateUsdFromP0(); 
     }
     
     fetchLiveExposure();
@@ -663,9 +647,7 @@ function calculateStrategy(params, manualBands) {
     scaleMode, aprPct, maxDays
   } = params;
 
-  if(!manualBands && !(pmin>0 && pmax>pmin && p0>0)) {
-     return null;
-  }
+  if(!manualBands && !(pmin>0 && pmax>pmin && p0>0)) return null;
 
   let bands = manualBands;
   if (!bands) {
@@ -673,15 +655,12 @@ function calculateStrategy(params, manualBands) {
   }
   
   const Ndown = bands.down.length, Nup = bands.up.length;
-  
   const targetMin = portfolioSize * targetMinPct / 100;
   const targetMax = portfolioSize * targetMaxPct / 100;
-
   const scaleFactorAt = (px) => (scaleMode === 'scale' && p0 > 0) ? (px/p0) : 1;
 
   const effectivePmin = (pmin > 0) ? pmin : (bands.down.length > 0 ? bands.down[bands.down.length-1].pa : 0);
   const currentAtMin = currentE * scaleFactorAt(effectivePmin);
-  
   const needMinDelta = (targetMin - currentAtMin);
   
   let sumRdown = 0;
@@ -699,20 +678,17 @@ function calculateStrategy(params, manualBands) {
 
   const effectivePmax = (pmax > 0) ? pmax : (bands.up.length > 0 ? bands.up[bands.up.length-1].pb : 0);
   const currentAtMax = currentE * scaleFactorAt(effectivePmax);
-  
   const needMoreNegativeAtMax = currentAtMax - targetMax;
   const perAltUsdNeeded = sumRup>0 ? (needMoreNegativeAtMax / sumRup) : 0;
   let aboveTotalNeeded = perAltUsdNeeded * Nup;
 
   let holdingsAvail = Math.max(currentE, 0);
   let buyShortAllowed = (targetMax < 0);
-  
   let aboveTotalScheduled = aboveTotalNeeded;
   let holdingsUsed = 0;
   let toBuyShort = 0;
 
   if(Nup === 0) aboveTotalScheduled = 0;
-
   if(currentE > 0 && targetMax === 0){
     aboveTotalScheduled = Math.min(aboveTotalNeeded, holdingsAvail);
     holdingsUsed = aboveTotalScheduled;
@@ -726,19 +702,12 @@ function calculateStrategy(params, manualBands) {
   }
 
   const perAltUsdSchedule = Nup>0 ? (aboveTotalScheduled / Nup) : 0;
-  
   const rows = [];
   const ordered = [...bands.down, ...bands.up];
   
-  const dailyRate = aprPct > 0 ? (aprPct / 100 / 365) : 0;
-  const totalCapitalAPR = (perUsdBelow * Ndown) + aboveTotalScheduled;
-
-  let belowTotal = 0;
-  let cumBelowValue = 0;
-  let cumAboveSale = 0;
+  let belowTotal = 0, cumBelowValue = 0, cumAboveSale = 0;
   let holdingsRemaining = holdingsUsed;
-  let startBuyShortPx = null;
-  let aboveTotal = 0;
+  let startBuyShortPx = null, aboveTotal = 0;
 
   ordered.forEach((b, idx) => {
     const isDown = (b.type === 'Below');
@@ -779,38 +748,18 @@ function calculateStrategy(params, manualBands) {
     const baseE = currentE * scaleFactorAt(boundaryPx);
     const netAtBoundary = isDown ? (baseE + cumBelowValue) : (baseE - cumAboveSale);
     const altUnitsAbove = (!isDown && deployAltUsd>0) ? (deployAltUsd / b.pa) : 0;
-    const pnlAtBoundary = netAtBoundary - baseE;
-    
-    let daysToBE = null;
-    if(dailyRate > 0 && totalCapitalAPR > 0 && pnlAtBoundary < 0){
-      const ratio = 1 - (pnlAtBoundary / totalCapitalAPR);
-      if(ratio > 1) daysToBE = Math.log(ratio) / Math.log(1 + dailyRate);
-    }
-    
+
     rows.push({
       bandIdx: b.origIdx || (idx + 1), 
       pa: b.pa, pb: b.pb, type: b.type,
-      r_down: rdown, r_up: rup,
-      deployUSD, valueAtPa, deployAltUsd, sourceTag, saleAtPb,
-      altUnitsAbove, netAtBoundary, pnlAtBoundary, daysToBE
+      deployUSD, deployAltUsd, sourceTag,
+      altUnitsAbove, netAtBoundary
     });
   });
 
-  const netAtPmin = (currentE * scaleFactorAt(effectivePmin)) + bands.down.reduce((s,b)=>s + perUsdBelow*Math.sqrt(b.pa/b.pb),0);
-  const netAtPmax = (currentE * scaleFactorAt(effectivePmax)) - bands.up.reduce((s,b)=>s + perAltUsdSchedule*Math.sqrt(b.pb/b.pa),0);
-  
   return {
     rows,
-    kpi: {
-      Ndown, Nup,
-      belowTotal, aboveTotal: aboveTotalScheduled,
-      resMin: netAtPmin - targetMin,
-      resMax: netAtPmax - targetMax,
-      holdingsUsed,
-      toBuyShort: (toBuyShort && buyShortAllowed ? toBuyShort : 0),
-      startBuyShortPx
-    },
-    apr: { totalCapitalAPR, dailyRate, maxDays, negRows: rows.filter(r=>r.pnlAtBoundary<0) },
+    kpi: { Ndown, Nup, belowTotal, aboveTotal: aboveTotalScheduled },
     rawBands: bands 
   };
 }
@@ -825,7 +774,6 @@ function renderTripleAggregateTable(container, strategies) {
   const btcPrice = strategies[2].params.denomUsd || 1; 
   const jlpStrat = strategies[3];
   const jlpUsd = (jlpStrat && jlpStrat.params && jlpStrat.params.p0) ? jlpStrat.params.p0 : 1; 
-  
   const p0 = Number(document.getElementById('p0').value) || 0;
   const solPriceUsd = p0 * btcPrice; 
 
@@ -848,28 +796,18 @@ function renderTripleAggregateTable(container, strategies) {
     <div class="card" style="margin-top:10px;">
       <div class="footnote" style="margin-bottom:8px; color:var(--muted);">
         Breakdown for the rows immediately surrounding current price.<br>
-        <b>Goal:</b> 33% Equal Split for USD Exposure (Below), 33% Equal Effective Exposure for SOL (Above).<br>
-        JLP/USDC (Above) requires 2x capital to match SOL exposure.
+        <b>Goal:</b> 33% Equal Split for USD Exposure (Below), 33% Equal Effective Exposure for SOL (Above).
       </div>
       <div class="scroll">
         <table>
           <thead>
             <tr>
-              <th>Band</th>
-              <th>Type</th>
-              <th>Target (Ref)</th>
+              <th>Band</th> <th>Type</th> <th>Target (Ref)</th>
               <th colspan="2" style="text-align:center; border-left:1px solid #333;">Q1 (SOL/USD)</th>
               <th colspan="2" style="text-align:center; border-left:1px solid #333;">Q2 (SOL/BTC)</th>
               <th colspan="2" style="text-align:center; border-left:1px solid #333;">Q3 (JLP/USDC)</th>
               <th style="border-left:1px solid #333;">Actual Sum (Eff)</th>
               <th>Diff</th>
-            </tr>
-            <tr>
-              <th></th><th></th><th></th>
-              <th class="sub-col" style="border-left:1px solid #333;">Dep (USD)</th><th class="sub-col">Eff</th>
-              <th class="sub-col" style="border-left:1px solid #333;">Dep (BTC)</th><th class="sub-col">Eff (USD)</th>
-              <th class="sub-col" style="border-left:1px solid #333;">Dep (JLP)</th><th class="sub-col">Eff</th>
-              <th style="border-left:1px solid #333;"></th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -878,66 +816,34 @@ function renderTripleAggregateTable(container, strategies) {
                const r1 = getRows(strategiesList[0])[idx] || {};
                const r2 = getRows(strategiesList[1])[idx] || {};
                const r3 = getRows(strategiesList[2])[idx] || {};
-               
-               let targetVal = 0;
-               let unit = '';
-               let d1=0, e1=0;
-               let d2=0, e2=0;
-               let d3=0, e3=0;
+               let targetVal = 0, unit = '', d1=0, e1=0, d2=0, e2=0, d3=0, e3=0;
 
                if(r.type === 'Below') {
-                 targetVal = r.deployUSD; 
-                 unit = 'USD';
+                 targetVal = r.deployUSD; unit = 'USD';
                  const splitVal = targetVal / 3.0;
-
-                 // Q1: USD -> 33%
                  d1 = splitVal; e1 = splitVal;
-                 
-                 // Q2: BTC -> 33%
                  d2 = splitVal / btcPrice; e2 = splitVal;
-                 
-                 // Q3: USDC -> 33%
                  d3 = splitVal; e3 = splitVal;
-                 
                } else {
-                 targetVal = r.altUnitsAbove;
-                 unit = 'SOL';
+                 targetVal = r.altUnitsAbove; unit = 'SOL';
                  const splitVal = targetVal / 3.0;
-                 
-                 // Q1: SOL -> 33%
                  d1 = splitVal; e1 = splitVal;
-                 
-                 // Q2: SOL -> 33%
                  d2 = splitVal; e2 = splitVal;
-                 
-                 // Q3: JLP -> 33% Effective SOL
                  const jlpAmt = r3.altUnitsAbove || 0;
                  d3 = jlpAmt;
-                 if(solPriceUsd > 0) {
-                    const valUsd = jlpAmt * jlpUsd;
-                    e3 = (valUsd * 0.5) / solPriceUsd; 
-                 }
+                 if(solPriceUsd > 0) e3 = (jlpAmt * jlpUsd * 0.5) / solPriceUsd; 
                }
-               
                const sumVal = e1 + e2 + e3;
                const diff = sumVal - targetVal;
-               const diffPct = (targetVal > 0) ? (diff / targetVal * 100) : 0;
-
                return `<tr>
                  <td style="text-align:left">${r.bandIdx}</td>
                  <td>${r.type}</td>
                  <td style="font-weight:bold; color:var(--accent);">${fmt(targetVal, 2)} ${unit}</td>
-                 
                  <td style="border-left:1px solid #333;">${fmt(d1, 2)}</td><td style="color:#aaa;">${fmt(e1, 2)}</td>
                  <td style="border-left:1px solid #333;">${fmt(d2, 4)}</td><td style="color:#aaa;">${fmt(e2, 2)}</td>
                  <td style="border-left:1px solid #333;">${fmt(d3, 2)}</td><td style="color:#aaa;">${fmt(e3, 2)}</td>
-                 
-                 <td style="font-weight:bold; border-left:1px solid #333;">
-                    ${fmt(sumVal, 2)} ${unit}
-                 </td>
-                 <td style="color:${Math.abs(diffPct)>5?'var(--bad)':'var(--good)'}; font-size:11px;">
-                   ${diff>0?'+':''}${fmt(diff, 2)} (${fmt(diffPct, 1)}%)
-                 </td>
+                 <td style="font-weight:bold; border-left:1px solid #333;">${fmt(sumVal, 2)} ${unit}</td>
+                 <td style="color:${Math.abs(diff/targetVal)>0.05?'var(--bad)':'var(--good)'}">${diff>0?'+':''}${fmt(diff, 2)}</td>
                </tr>`;
             }).join('')}
           </tbody>
@@ -945,81 +851,84 @@ function renderTripleAggregateTable(container, strategies) {
       </div>
     </div>
   `;
-  
   const div = document.createElement('div');
   div.innerHTML = html;
   container.appendChild(div);
 }
 
+// --- SIMPLIFIED RENDER FUNCTION FOR SCHEDULES ---
 function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, assetSymbol, lpId) {
   if(!strategyData) return;
-  const { rows, kpi, apr } = strategyData;
+  const { rows, kpi } = strategyData;
   const dec = parseInt(document.getElementById('dec').value || '4', 10);
   
+  // Calculate Totals specifically for the header summary
+  let aboveAssetSum = 0; // Usually SOL
+  let belowQuoteSum = 0; // Usually BTC
+  
+  rows.forEach(r => {
+      if(r.type === 'Above') aboveAssetSum += r.altUnitsAbove;
+      if(r.type === 'Below') belowQuoteSum += r.deployUSD; // This is Quote Amount
+  });
+
   const sectionHtml = `
     <div class="section-header">${title}</div>
-    <div class="layout-grid">
-      <div class="card">
-        <h2>Quick KPIs</h2>
-        <div class="kpis">
-          <div class="kpi"><b>Total Deploy Below (${denomSymbol})</b><div>${fmtDenom(kpi.belowTotal, 6, denomUsd, denomSymbol)}</div></div>
-          <div class="kpi"><b>Total Deploy Above (${denomSymbol})</b><div>${fmtDenom(kpi.aboveTotal, 6, denomUsd, denomSymbol)}</div></div>
-          <div class="kpi"><b>Intervals</b><div>${kpi.Ndown} ↓ / ${kpi.Nup} ↑</div></div>
-          <div class="kpi"><b>Residual @ Pmin</b><div>${fmtDenom(kpi.resMin, 6, denomUsd, denomSymbol)}</div></div>
-          <div class="kpi"><b>Residual @ Pmax</b><div>${fmtDenom(kpi.resMax, 6, denomUsd, denomSymbol)}</div></div>
-          <div class="kpi"><b>Funded from Holdings</b><div>${fmtDenom(kpi.holdingsUsed, 6, denomUsd, denomSymbol)}</div></div>
-          <div class="kpi"><b>To Buy+Short</b><div>${fmtDenom(kpi.toBuyShort, 6, denomUsd, denomSymbol)}</div></div>
-        </div>
-      </div>
-      <div class="card">
-        <h2>APR & PnL Analytics</h2>
-        <div class="row4">
-           <div><select id="priceSelect_${lpId}" style="width:100%"></select></div>
-        </div>
-        <div style="margin-top:12px; height:180px;"><canvas id="chart_${lpId}" style="max-height:100%;"></canvas></div>
-      </div>
+    
+    <div class="summary-box">
+       <div class="summary-item">
+          <label>Total Required Above</label>
+          <div style="color:var(--accent)">${fmt(aboveAssetSum, 4)} ${assetSymbol}</div>
+       </div>
+       <div class="summary-item">
+          <label>Total Required Below</label>
+          <div style="color:var(--good)">${fmt(belowQuoteSum, 6)} ${denomSymbol}</div>
+       </div>
+       <div class="summary-item">
+          <label>Intervals</label>
+          <div>${kpi.Ndown} ↓ / ${kpi.Nup} ↑</div>
+       </div>
     </div>
 
-    <div class="card" style="margin-top:14px;">
-      <h2>Schedule — ${assetSymbol} / ${denomSymbol}</h2>
+    <div class="card">
       <div class="scroll">
         <table>
           <thead>
             <tr>
-              <th>Band</th> <th>p<sub>a</sub></th> <th>p<sub>b</sub></th> <th>Type</th>
-              <th>Deploy (${denomSymbol} ↓)</th>
-              <th>Value @ p<sub>a</sub> (to ${assetSymbol})</th>
-              <th>Deploy ${assetSymbol} value @ P₀ (${assetSymbol} / ${denomSymbol} ↑)</th>
-              <th>Source</th>
-              <th>Sale @ p<sub>b</sub> (${denomSymbol} ↑)</th>
-              <th>Net Exposure (${denomSymbol})</th>
-              <th>PnL (${denomSymbol})</th>
-              <th class="sticky-r">Days to BE</th>
+              <th style="text-align:left;">Band</th>
+              <th>Range (p<sub>a</sub> - p<sub>b</sub>)</th>
+              <th>Type</th>
+              <th>Deployed Asset</th>
+              <th>Value (USD)</th>
+              <th>Composition/Notes</th>
             </tr>
           </thead>
           <tbody>
              ${rows.map(r => {
-               let altValDisplay = '';
-               const altAmt = r.altUnitsAbove; 
-               const usdVal = r.deployAltUsd * denomUsd;
-               if(r.type === 'Above' && r.deployAltUsd > 1e-12) {
-                 altValDisplay = fmt(altAmt, 6) + ' ' + assetSymbol + ' / ' + fmt(usdVal, 2) + (denomSymbol==='USD'?'':' USD');
-               } else {
-                 altValDisplay = fmtDenom(r.deployAltUsd, 6, denomUsd, denomSymbol);
-               }
                if((document.getElementById('showZeros').value!=='show') && (r.deployUSD + r.deployAltUsd < 1e-12)) return '';
                
+               let deployStr = '';
+               let usdVal = 0;
+               let color = '';
+
+               if (r.type === 'Below') {
+                   // Bid Side: Deploying Quote (Denom)
+                   deployStr = fmt(r.deployUSD, 6) + ' ' + denomSymbol;
+                   usdVal = r.deployUSD * denomUsd;
+                   color = 'var(--good)';
+               } else {
+                   // Ask Side: Deploying Base (Asset)
+                   deployStr = fmt(r.altUnitsAbove, 6) + ' ' + assetSymbol;
+                   usdVal = r.deployAltUsd * denomUsd;
+                   color = 'var(--accent)';
+               }
+
                return `<tr>
-                 <td style="text-align:left">${r.type==='Below'?'↓':'↑'} ${r.bandIdx}</td>
-                 <td>${fmt(r.pa, 6)}</td> <td>${fmt(r.pb, 6)}</td> <td>${r.type}</td>
-                 <td>${fmtDenom(r.deployUSD, 6, denomUsd, denomSymbol)}</td>
-                 <td>${fmtDenom(r.valueAtPa, 6, denomUsd, denomSymbol)}</td>
-                 <td>${altValDisplay}</td>
-                 <td style="text-align:left">${r.sourceTag}</td>
-                 <td>${fmtDenom(r.saleAtPb, 6, denomUsd, denomSymbol)}</td>
-                 <td>${fmtDenom(r.netAtBoundary, 6, denomUsd, denomSymbol)}</td>
-                 <td>${fmtDenom(r.pnlAtBoundary, 6, denomUsd, denomSymbol)}</td>
-                 <td class="sticky-r">${r.daysToBE!==null ? r.daysToBE.toFixed(2) : ''}</td>
+                 <td style="text-align:left">${r.bandIdx}</td>
+                 <td>${fmt(r.pa, 6)} - ${fmt(r.pb, 6)}</td>
+                 <td style="color:${color}">${r.type === 'Below' ? '↓' : '↑'}</td>
+                 <td style="font-weight:600; color:${color}">${deployStr}</td>
+                 <td style="color:#888">$${fmt(usdVal, 2)}</td>
+                 <td style="font-size:11px;">${r.sourceTag}</td>
                </tr>`;
              }).join('')}
           </tbody>
@@ -1035,24 +944,6 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
   div.id = 'section_' + lpId;
   div.innerHTML = sectionHtml;
   container.appendChild(div);
-
-  const ctx = document.getElementById(`chart_${lpId}`);
-  if(ctx && apr.negRows.length > 0) {
-    new Chart(ctx.getContext('2d'), {
-      type:'line',
-      data: {
-        labels: Array.from({length: apr.maxDays+1}, (_, i) => i),
-        datasets: [{
-          label: 'PnL (' + denomSymbol + ') @ Selected Boundary',
-          data: Array.from({length: apr.maxDays+1}, (_, d) => 
-            (apr.negRows[0].pnlAtBoundary + apr.totalCapitalAPR * (Math.pow(1 + apr.dailyRate, d) - 1))
-          ),
-          borderColor: '#5bb0ff', tension: 0.1
-        }]
-      },
-      options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{display:false}, y:{display:false}} }
-    });
-  }
 }
 
 function generate() {
@@ -1078,8 +969,6 @@ function generate() {
   const isJlpMode = document.getElementById('jlpStrategyMode').checked;
   const isTripleMode = document.getElementById('tripleLpMode').checked;
   
-  if(debugBox) debugBox.textContent += `\nMode: ${isTripleMode?'Triple':(isDual?'Dual':(isJlpMode?'JLP':'Standard'))}`;
-
   const strategies = [];
 
   if (isTripleMode) {
@@ -1090,116 +979,47 @@ function generate() {
         const totalUsdPort = portfolioSize * denomUsd;
         const totalUsdCurE = currentE * denomUsd;
         
-        if(solP0Usd <= 0 || totalUsdPort <= 0) {
-            console.error("Zero price or portfolio in Triple Mode.");
-            if(debugBox) debugBox.textContent += '\nError: Zero Price or Portfolio for Triple Mode.';
-        }
-
         const refParams = {
             pmin: solPminUsd, pmax: solPmaxUsd, p0: solP0Usd, stepPct,
-            portfolioSize: totalUsdPort,
-            currentE: totalUsdCurE,
+            portfolioSize: totalUsdPort, currentE: totalUsdCurE,
             targetMinPct, targetMaxPct,
             denomSymbol: 'USD', denomUsd: 1, assetSymbol: assetSymbol,
             scaleMode: document.getElementById('scaleMode').value,
-            aprPct: Number(document.getElementById('aprPct').value),
-            maxDays: Number(document.getElementById('maxDays').value)
+            aprPct: 0, maxDays: 0
         };
         
         const refData = calculateStrategy(refParams);
-        if (!refData) {
-            if(debugBox) debugBox.textContent += '\nError: Failed to calculate Reference Strategy.';
-            return;
+        if (refData) {
+            strategies.push({
+              title: `Reference: Single ${assetSymbol}/USD LP`,
+              id: 'ref', params: refParams, data: refData
+            });
+
+            const jlpInputVal = Number(document.getElementById('jlpUsd').value);
+            const safeSolP0Usd = (solP0Usd > 0) ? solP0Usd : 1; 
+            const jlpUsdLive = (jlpInputVal > 0) ? jlpInputVal : (safeSolP0Usd * 0.5); 
+            const getJlpPrice = (solPrice) => (solP0Usd <= 0) ? 0 : jlpUsdLive * (0.5 * (solPrice / solP0Usd) + 0.5);
+
+            const refBands = refData.rawBands; 
+            const mapBandList = (list, fnMap) => list.map((b, i) => ({ pa: fnMap(b.pa), pb: fnMap(b.pb), type: b.type, origIdx: i + 1 }));
+
+            const bandsQ1 = { down: mapBandList(refBands.down, p => p), up: mapBandList(refBands.up, p => p) };
+            const bandsQ2 = { down: mapBandList(refBands.down, p => p / denomUsd), up: mapBandList(refBands.up, p => p / denomUsd) };
+            const bandsQ3 = { down: mapBandList(refBands.down, p => getJlpPrice(p)), up: mapBandList(refBands.up, p => getJlpPrice(p)) };
+
+            const capSplit = totalUsdPort / 3.0;
+            const curSplit = totalUsdCurE / 3.0;
+
+            strategies.push({ title: `1. ${assetSymbol} / USD (Equal Split)`, id: 'q1', params: { ...refParams, portfolioSize: capSplit, currentE: curSplit }, customBands: bandsQ1 });
+            strategies.push({ title: `2. ${assetSymbol} / ${denomSymbol} (Equal Split)`, id: 'q2', params: { ...refParams, portfolioSize: portfolioSize/3.0, currentE: currentE/3.0, denomSymbol, denomUsd, assetSymbol }, customBands: bandsQ2 });
+            strategies.push({ title: `3. JLP / USDC (Asymmetric Split)`, id: 'q3', params: { ...refParams, portfolioSize: capSplit, currentE: curSplit, denomSymbol:'USDC', denomUsd:1, assetSymbol:'JLP' }, customBands: bandsQ3 });
         }
-
-        strategies.push({
-          title: `Reference: Single ${assetSymbol}/USD LP (100% Allocation)`,
-          id: 'ref',
-          params: refParams,
-          data: refData
-        });
-
-        const jlpInputVal = Number(document.getElementById('jlpUsd').value);
-        const safeSolP0Usd = (solP0Usd > 0) ? solP0Usd : 1; 
-        const jlpUsdLive = (jlpInputVal > 0) ? jlpInputVal : (safeSolP0Usd * 0.5); 
-        
-        if(jlpInputVal <= 0 && jlpUsdLive > 0) document.getElementById('jlpUsd').value = jlpUsdLive.toFixed(3);
-        
-        const getJlpPrice = (solPrice) => {
-            if (solP0Usd <= 0) return 0;
-            return jlpUsdLive * (0.5 * (solPrice / solP0Usd) + 0.5);
-        };
-
-        const refBands = refData.rawBands; 
-        if (!refBands || !refBands.down || !refBands.up) return;
-
-        const mapBandList = (list, fnMap) => list.map((b, i) => ({
-            pa: fnMap(b.pa),
-            pb: fnMap(b.pb),
-            type: b.type,
-            origIdx: i + 1
-        }));
-
-        const bandsQ1 = { down: mapBandList(refBands.down, p => p), up: mapBandList(refBands.up, p => p) };
-        const bandsQ2 = { down: mapBandList(refBands.down, p => p / denomUsd), up: mapBandList(refBands.up, p => p / denomUsd) };
-        const bandsQ3 = { down: mapBandList(refBands.down, p => getJlpPrice(p)), up: mapBandList(refBands.up, p => getJlpPrice(p)) };
-
-        const capSplit = totalUsdPort / 3.0;
-        const curSplit = totalUsdCurE / 3.0;
-
-        strategies.push({
-          title: `1. ${assetSymbol} / USD (Equal Split)`,
-          id: 'q1',
-          params: { ...refParams, portfolioSize: capSplit, currentE: curSplit },
-          customBands: bandsQ1
-        });
-        
-        strategies.push({
-          title: `2. ${assetSymbol} / ${denomSymbol} (Equal Split)`,
-          id: 'q2',
-          params: {
-            pmin: pmin, pmax: pmax, p0: p0, stepPct, 
-            portfolioSize: portfolioSize / 3.0, 
-            currentE: currentE / 3.0,
-            targetMinPct, targetMaxPct,
-            denomSymbol: denomSymbol, denomUsd: denomUsd, assetSymbol: assetSymbol,
-            scaleMode: document.getElementById('scaleMode').value,
-            aprPct: Number(document.getElementById('aprPct').value),
-            maxDays: Number(document.getElementById('maxDays').value)
-          },
-          customBands: bandsQ2
-        });
-        
-        strategies.push({
-          title: `3. JLP / USDC (Asymmetric Split)`,
-          id: 'q3',
-          params: {
-            pmin: 0, pmax: 0, 
-            p0: jlpUsdLive, 
-            stepPct, 
-            portfolioSize: capSplit, 
-            currentE: curSplit,
-            targetMinPct: targetMinPct, 
-            targetMaxPct: targetMaxPct * 2, 
-            denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP',
-            scaleMode: document.getElementById('scaleMode').value,
-            aprPct: Number(document.getElementById('aprPct').value),
-            maxDays: Number(document.getElementById('maxDays').value)
-          },
-          customBands: bandsQ3
-        });
-     } catch (err) {
-        console.error("Triple Mode Generation Error:", err);
-        if(debugBox) debugBox.textContent += `\nEXCEPTION in Triple Mode: ${err.message}`;
-     }
+     } catch (err) { console.error(err); }
 
   } else {
      let capitalRatio = 1.0;
-     if (isDual) {
-         capitalRatio = Number(document.getElementById('dualMult').value) || 0.5;
-     } else if (isJlpMode) {
-         capitalRatio = 0.5;
-     }
+     if (isDual) capitalRatio = Number(document.getElementById('dualMult').value) || 0.5;
+     else if (isJlpMode) capitalRatio = 0.5;
 
      const baseParams = {
         pmin, pmax, p0, stepPct,
@@ -1208,8 +1028,7 @@ function generate() {
         targetMinPct, targetMaxPct,
         denomSymbol, denomUsd, assetSymbol,
         scaleMode: document.getElementById('scaleMode').value,
-        aprPct: Number(document.getElementById('aprPct').value),
-        maxDays: Number(document.getElementById('maxDays').value)
+        aprPct: 0, maxDays: 0
      };
      
      if(isJlpMode) {
@@ -1228,17 +1047,15 @@ function generate() {
         const usdPortfolio = (portfolioSize * denomUsd);
         const usdCurrentE  = (currentE * denomUsd); 
 
-        strategies.push({ title: `JLP Strategy A: JLP / USDC`, id: 'jlp1', params: { ...baseParams, pmin: jlpPmin, pmax: jlpPmax, p0: jlpP0, portfolioSize: usdPortfolio*0.5, currentE: usdCurrentE*0.5, targetMinPct: targetMinPct*2, targetMaxPct: targetMaxPct*2, denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP' } });
-        strategies.push({ title: `JLP Strategy B: SOL / JLP`, id: 'jlp2', params: { ...baseParams, pmin: ratioPmin, pmax: ratioPmax, p0: ratioP0, portfolioSize: (usdPortfolio*0.5)/jlpUsdLive, currentE: (usdCurrentE*0.5)/jlpUsdLive, denomSymbol: 'JLP', denomUsd: jlpUsdLive, assetSymbol: assetSymbol, targetMinPct: targetMinPct*2, targetMaxPct: targetMaxPct*2 } });
+        strategies.push({ title: `JLP Strategy A: JLP / USDC`, id: 'jlp1', params: { ...baseParams, pmin: jlpPmin, pmax: jlpPmax, p0: jlpP0, portfolioSize: usdPortfolio*0.5, currentE: usdCurrentE*0.5, denomSymbol: 'USDC', denomUsd: 1, assetSymbol: 'JLP' } });
+        strategies.push({ title: `JLP Strategy B: SOL / JLP`, id: 'jlp2', params: { ...baseParams, pmin: ratioPmin, pmax: ratioPmax, p0: ratioP0, portfolioSize: (usdPortfolio*0.5)/jlpUsdLive, currentE: (usdCurrentE*0.5)/jlpUsdLive, denomSymbol: 'JLP', denomUsd: jlpUsdLive, assetSymbol: assetSymbol } });
      } else {
         strategies.push({ title: isDual?`LP 1 (${capitalRatio}x)`:`Schedule`, id: 'lp1', params: baseParams });
         if(isDual) {
            const usdPmin = pmin * denomUsd;
            const usdPmax = pmax * denomUsd;
            const usdP0 = p0 * denomUsd;
-           const usdPortfolio = portfolioSize * denomUsd * capitalRatio;
-           const usdCurrentE = currentE * denomUsd * capitalRatio;
-           strategies.push({ title: `LP 2 (USD, ${capitalRatio}x)`, id: 'lp2', params: { ...baseParams, pmin: usdPmin, pmax: usdPmax, p0: usdP0, portfolioSize: usdPortfolio, currentE: usdCurrentE, denomSymbol: 'USD', denomUsd: 1 } });
+           strategies.push({ title: `LP 2 (USD, ${capitalRatio}x)`, id: 'lp2', params: { ...baseParams, pmin: usdPmin, pmax: usdPmax, p0: usdP0, portfolioSize: portfolioSize * denomUsd * capitalRatio, currentE: currentE * denomUsd * capitalRatio, denomSymbol: 'USD', denomUsd: 1 } });
         }
      }
   }
@@ -1257,8 +1074,6 @@ function generate() {
            const s = strategies[i];
            renderLPSection(container, s.title, s.data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id);
          }
-     } else {
-        if(debugBox) debugBox.textContent += '\nWarning: Triple Mode selected but no strategies generated.';
      }
   } else {
      strategies.forEach(s => {
@@ -1282,98 +1097,47 @@ function generate() {
 function generateExposureSchedule() {
   const container = document.getElementById('resultsContainer');
   container.innerHTML = '';
-
-  // 1. Gather Inputs
   const pmin = Number(document.getElementById('pmin').value);
   const pmax = Number(document.getElementById('pmax').value);
   const stepPct = Number(document.getElementById('intervalPct').value) || 1;
-  
   const denomUsd = Number(document.getElementById('denomUsd').value) || 0;
   const portfolioSize = Number(document.getElementById('portfolioSize').value) || 0;
   const targetMinPct = Number(document.getElementById('targetMinPct').value) || 0;
   const targetMaxPct = Number(document.getElementById('targetMaxPct').value) || 0;
-  
   const assetSym = (document.getElementById('assetSelect').value || 'ALT').toUpperCase();
   const denomSym = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
 
-  // Validation
   if (pmin <= 0 || pmax <= pmin || portfolioSize <= 0) {
     container.innerHTML = '<div class="card" style="color:var(--bad)">Error: Check Pmin, Pmax, and Portfolio Size.</div>';
     return;
   }
-
-  // 2. Generate Data Points
   const rows = [];
   let p = pmin;
-  
-  // Calculate Slope for linear interpolation of Target %
   const slope = (targetMaxPct - targetMinPct) / (pmax - pmin);
-  
-  // Loop from Pmin to Pmax
   while(p <= pmax * (1 + stepPct/100)) { 
     const currentPrice = p;
-    
-    // Linear Interpolation for Target %
     let netExpPct = targetMinPct + slope * (currentPrice - pmin);
-    
     if(slope > 0) netExpPct = Math.min(Math.max(netExpPct, targetMinPct), targetMaxPct);
     else netExpPct = Math.min(Math.max(netExpPct, targetMaxPct), targetMinPct);
-
-    // Calculate Values
     const netExpDenom = portfolioSize * (netExpPct / 100);
     const netExpUsd = netExpDenom * denomUsd;
     const priceUsd = currentPrice * denomUsd;
-
-    rows.push({
-      pricePair: currentPrice,
-      priceUsd: priceUsd,
-      expPct: netExpPct,
-      expDenom: netExpDenom,
-      expUsd: netExpUsd
-    });
-
+    rows.push({ pricePair: currentPrice, priceUsd: priceUsd, expPct: netExpPct, expDenom: netExpDenom, expUsd: netExpUsd });
     if(p >= pmax) break; 
     p = p * (1 + stepPct/100);
-    if(p > pmax && p < pmax * (1 + stepPct/100 * 0.1)) p = pmax; 
-    else if (p > pmax) { 
-       p = pmax;
-    }
+    if(p > pmax && p < pmax * 1.01) p = pmax; 
   }
-
-  // 3. Render Table
   const html = `
     <div class="section-header">Exposure Schedule Target</div>
-    <div class="card">
-      <div class="footnote" style="margin-bottom:12px;">
-        Projected Net Exposure based on linear interpolation between ${targetMinPct}% (@Pmin) and ${targetMaxPct}% (@Pmax).
-      </div>
-      <div class="scroll">
-        <table>
-          <thead>
-            <tr>
-              <th style="text-align:left">Price (${assetSym}/${denomSym})</th>
-              <th>Price (${assetSym}/USD)</th>
-              <th>Net Exposure (Port %)</th>
-              <th>Net Exposure (${denomSym})</th>
-              <th>Net Exposure (USD)</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.map(r => `
-              <tr>
-                <td style="text-align:left; color:var(--accent);">${fmt(r.pricePair, 8)}</td>
-                <td>$${fmt(r.priceUsd, 2)}</td>
-                <td style="color:${r.expPct >= 0 ? 'var(--good)' : 'var(--bad)'}">${fmt(r.expPct, 2)}%</td>
-                <td>${fmt(r.expDenom, 4)}</td>
-                <td>$${fmt(r.expUsd, 2)}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <div class="card"><div class="scroll"><table><thead><tr>
+       <th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Price (${assetSym}/USD)</th><th>Net Exposure (Port %)</th><th>Net Exposure (${denomSym})</th><th>Net Exposure (USD)</th>
+    </tr></thead><tbody>
+    ${rows.map(r => `<tr>
+       <td style="text-align:left; color:var(--accent);">${fmt(r.pricePair, 8)}</td><td>$${fmt(r.priceUsd, 2)}</td>
+       <td style="color:${r.expPct >= 0 ? 'var(--good)' : 'var(--bad)'}">${fmt(r.expPct, 2)}%</td><td>${fmt(r.expDenom, 4)}</td><td>$${fmt(r.expUsd, 2)}</td>
+    </tr>`).join('')}
+    </tbody></table></div></div>
   `;
-
   const div = document.createElement('div');
   div.innerHTML = html;
   container.appendChild(div);
@@ -1383,19 +1147,15 @@ function generateExposureSchedule() {
 function generatePnLSchedule() {
   const container = document.getElementById('resultsContainer');
   container.innerHTML = '';
-
-  // 1. Gather Inputs
   const pmin = Number(document.getElementById('pmin').value);
   const pmax = Number(document.getElementById('pmax').value);
   const p0 = Number(document.getElementById('p0').value);
   const stepPct = Number(document.getElementById('intervalPct').value) || 1;
-  
   const denomUsd = Number(document.getElementById('denomUsd').value) || 0;
   const portfolioSize = Number(document.getElementById('portfolioSize').value) || 0;
   const targetMinPct = Number(document.getElementById('targetMinPct').value) || 0;
   const targetMaxPct = Number(document.getElementById('targetMaxPct').value) || 0;
   const aprPct = Number(document.getElementById('aprPct').value) || 0;
-  
   const assetSym = (document.getElementById('assetSelect').value || 'ALT').toUpperCase();
   const denomSym = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
 
@@ -1403,8 +1163,6 @@ function generatePnLSchedule() {
     container.innerHTML = '<div class="card" style="color:var(--bad)">Error: Check Pmin, Pmax, P0, and Portfolio Size.</div>';
     return;
   }
-
-  // 2. Helper: Get Target Exposure (Denom) at specific Price
   const slope = (targetMaxPct - targetMinPct) / (pmax - pmin);
   const getExpAt = (px) => {
       let pct = targetMinPct + slope * (px - pmin);
@@ -1412,134 +1170,60 @@ function generatePnLSchedule() {
       else pct = Math.min(Math.max(pct, targetMaxPct), targetMinPct);
       return portfolioSize * (pct / 100);
   };
-
-  // 3. Generate Price Points (Include P0 specifically for accuracy)
   let rawPrices = [p0];
   let p = pmin;
   while(p <= pmax * (1 + stepPct/100)) {
-      rawPrices.push(p);
-      p = p * (1 + stepPct/100);
+      rawPrices.push(p); p = p * (1 + stepPct/100);
       if(p > pmax && p < pmax * 1.01) p = pmax;
   }
-  // Sort and deduplicate
   rawPrices = [...new Set(rawPrices)].sort((a,b) => a - b);
-
-  // 4. Calculate PnL Integration
-  // We integrate: dPnL = (AssetUnits) * dPrice
-  // AssetUnits = Exposure(Denom) / Price
-  const data = [];
   const startIdx = rawPrices.indexOf(p0);
-  
-  // Calculate Units held at every point
-  const points = rawPrices.map(px => {
-      const expDenom = getExpAt(px);
-      return {
-          px: px,
-          units: expDenom / px, // Units of ALT
-          expDenom: expDenom
-      };
-  });
-
-  // Set PnL = 0 at P0
+  const points = rawPrices.map(px => ({ px: px, units: getExpAt(px) / px, expDenom: getExpAt(px) }));
   points[startIdx].pnl = 0;
-
-  // Integrate Upwards from P0
   for(let i = startIdx + 1; i < points.length; i++) {
-      const prev = points[i-1];
-      const curr = points[i];
-      const avgUnits = (prev.units + curr.units) / 2;
-      const dP = curr.px - prev.px;
-      curr.pnl = prev.pnl + (avgUnits * dP);
+      const prev = points[i-1], curr = points[i];
+      curr.pnl = prev.pnl + ((prev.units + curr.units) / 2 * (curr.px - prev.px));
   }
-
-  // Integrate Downwards from P0
   for(let i = startIdx - 1; i >= 0; i--) {
-      const prev = points[i+1]; // "prev" here is the higher price we just came from
-      const curr = points[i];
-      const avgUnits = (prev.units + curr.units) / 2;
-      const dP = curr.px - prev.px; // Negative
-      curr.pnl = prev.pnl + (avgUnits * dP);
+      const prev = points[i+1], curr = points[i];
+      curr.pnl = prev.pnl + ((prev.units + curr.units) / 2 * (curr.px - prev.px));
   }
-
-  // 5. APR Calc
   const dailyYield = (portfolioSize * (aprPct/100)) / 365;
-
-  // 6. Render
   const html = `
     <div class="section-header">Projected PnL Schedule</div>
-    <div class="card">
-      <div class="footnote" style="margin-bottom:12px;">
-        PnL based on continuous rebalancing to Target Exposure.<br>
-        Daily Yield (APR ${aprPct}%): <b>${fmt(dailyYield, 5)} ${denomSym}</b>
-      </div>
-      <div class="scroll">
-        <table>
-          <thead>
-            <tr>
-              <th style="text-align:left">Price (${assetSym}/${denomSym})</th>
-              <th>Target Exp (${denomSym})</th>
-              <th>PnL (${denomSym})</th>
-              <th>PnL (USD)</th>
-              <th>Days to Break Even</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${points.map(r => {
-              const isP0 = Math.abs(r.px - p0) < 1e-9;
-              const pnlUsd = r.pnl * denomUsd;
-              let daysStr = '–';
-              
-              if (r.pnl < 0 && dailyYield > 0) {
-                  const days = Math.abs(r.pnl) / dailyYield;
-                  daysStr = days.toFixed(1) + ' d';
-              }
-              
-              const rowStyle = isP0 ? 'background:rgba(255,255,255,0.05);' : '';
-              const pnlColor = r.pnl >= 0 ? 'var(--good)' : 'var(--bad)';
-
-              return `<tr style="${rowStyle}">
-                <td style="text-align:left; color:${isP0?'var(--accent)':'inherit'}">${fmt(r.px, 8)} ${isP0?'(P₀)':''}</td>
-                <td>${fmt(r.expDenom, 4)}</td>
-                <td style="color:${pnlColor}; font-weight:600;">${r.pnl > 0 ? '+':''}${fmt(r.pnl, 5)}</td>
-                <td style="color:${pnlColor}">${r.pnl > 0 ? '+':''}$${fmt(pnlUsd, 2)}</td>
-                <td style="color:var(--warn);">${daysStr}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <div class="card"><div class="footnote" style="margin-bottom:12px;">Daily Yield (APR ${aprPct}%): <b>${fmt(dailyYield, 5)} ${denomSym}</b></div><div class="scroll"><table><thead><tr>
+      <th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Target Exp (${denomSym})</th><th>PnL (${denomSym})</th><th>PnL (USD)</th><th>Days to Break Even</th>
+    </tr></thead><tbody>
+    ${points.map(r => {
+       const isP0 = Math.abs(r.px - p0) < 1e-9;
+       let daysStr = (r.pnl < 0 && dailyYield > 0) ? (Math.abs(r.pnl)/dailyYield).toFixed(1) + ' d' : '–';
+       const pnlColor = r.pnl >= 0 ? 'var(--good)' : 'var(--bad)';
+       return `<tr style="${isP0 ? 'background:rgba(255,255,255,0.05);' : ''}">
+          <td style="text-align:left; color:${isP0?'var(--accent)':'inherit'}">${fmt(r.px, 8)} ${isP0?'(P₀)':''}</td>
+          <td>${fmt(r.expDenom, 4)}</td><td style="color:${pnlColor}; font-weight:600;">${r.pnl>0?'+':''}${fmt(r.pnl, 5)}</td>
+          <td style="color:${pnlColor}">${r.pnl>0?'+':''}$${fmt(r.pnl * denomUsd, 2)}</td><td style="color:var(--warn);">${daysStr}</td>
+       </tr>`;
+    }).join('')}
+    </tbody></table></div></div>
   `;
-
   const div = document.createElement('div');
   div.innerHTML = html;
   container.appendChild(div);
 }
 
 (function(){
-  const assetSel = document.getElementById('assetSelect');
-  const denomSel = document.getElementById('denomSelect');
-  const altUsdEl = document.getElementById('altUsd');
-  const denomUsdEl = document.getElementById('denomUsd');
-  const p0El = document.getElementById('p0');
-  const dual = document.getElementById('dualLpMode');
-  const jlp = document.getElementById('jlpStrategyMode');
-  const triple = document.getElementById('tripleLpMode');
+  const assetSel = document.getElementById('assetSelect'), denomSel = document.getElementById('denomSelect');
+  const altUsdEl = document.getElementById('altUsd'), denomUsdEl = document.getElementById('denomUsd'), p0El = document.getElementById('p0');
+  const dual = document.getElementById('dualLpMode'), jlp = document.getElementById('jlpStrategyMode'), triple = document.getElementById('tripleLpMode');
   
   const btn = document.getElementById('btn');
   if(btn) btn.addEventListener('click', generate);
-  
-  // Attach New Listeners
   const btnExp = document.getElementById('btnExposure');
   if(btnExp) btnExp.addEventListener('click', generateExposureSchedule);
-
   const btnPnL = document.getElementById('btnPnL');
   if(btnPnL) btnPnL.addEventListener('click', generatePnLSchedule);
-
   const btnClear = document.getElementById('btnClear');
-  if(btnClear) btnClear.addEventListener('click', function(){
-    document.getElementById('resultsContainer').innerHTML = '';
-  });
+  if(btnClear) btnClear.addEventListener('click', function(){ document.getElementById('resultsContainer').innerHTML = ''; });
   
   dual.addEventListener('change', function(){ if(this.checked) { jlp.checked=false; triple.checked=false; } });
   jlp.addEventListener('change', function(){ if(this.checked) { dual.checked=false; triple.checked=false; } });
@@ -1547,22 +1231,12 @@ function generatePnLSchedule() {
 
   if(altUsdEl) altUsdEl.addEventListener('input', updateP0FromUsd);
   if(denomUsdEl) denomUsdEl.addEventListener('input', updateP0FromUsd);
-  
   if(p0El) p0El.addEventListener('input', updateUsdFromP0);
-
-  if (assetSel) {
-    assetSel.addEventListener('change', () => {
-      loadAssetConfig(assetSel.value);
-    });
-  }
-
-  if (denomSel) {
-    denomSel.addEventListener('change', () => {
+  if (assetSel) assetSel.addEventListener('change', () => loadAssetConfig(assetSel.value));
+  if (denomSel) denomSel.addEventListener('change', () => {
       updateDenomLabels(denomSel.value);
-      const currentAsset = assetSel ? assetSel.value : '';
-      autoFetchPrices(currentAsset, denomSel.value);
-    });
-  }
+      autoFetchPrices(assetSel ? assetSel.value : '', denomSel.value);
+  });
   
   loadAssetList();
   if (denomSel) autoFetchPrices('', denomSel.value);
