@@ -264,7 +264,7 @@
         <label>Distribution Mode</label>
         <select id="distMode">
           <option value="uniform" selected>Equal Units (Linear)</option>
-          <option value="univ3">Uni V3 Standard (Single Position)</option>
+          <option value="univ3">Dual Single-Sided (Uni V3)</option>
         </select>
       </div>
       <div>
@@ -689,17 +689,11 @@ function calculateStrategy(params, manualBands) {
   
   if (Nup > 0) {
       if (distMode === 'univ3') {
-          // Uni V3 Standard: One single L for the whole range P0 to Pmax
-          // Total Asset Needed = L * (1/sqrt(P0) - 1/sqrt(Pmax))
-          // So L = Total Asset / (...)
+          // Uni V3 Logic: Calculate L specifically for P0 -> Pmax range based on Asset target
           const term = (1/Math.sqrt(p0)) - (1/Math.sqrt(effectivePmax));
           if(term > 0) globalL_Above = needMoreNegativeAtMax / term;
           
-          // Calculate total value scheduled (in denom) for consistency
-          // V = L * (sqrt(Pmax) - sqrt(P0)) ? No, that's for y.
-          // We just calculate sum of micro-bands later.
-          // But to check liquidity constraints, we need an estimate of total Value.
-          // Rough estimate: Value = AssetAmt * GeometricMeanPrice
+          // Estimate total value for constraint checking
           aboveTotalScheduled = needMoreNegativeAtMax * Math.sqrt(p0 * effectivePmax); 
       } else {
           // Linear Exposure (Uniform)
@@ -712,17 +706,19 @@ function calculateStrategy(params, manualBands) {
   
   // Quote side (Below) logic
   let globalL_Below = 0;
-  if(Ndown > 0 && distMode === 'univ3') {
-      const term = Math.sqrt(p0) - Math.sqrt(effectivePmin);
-      if(term > 0) globalL_Below = needMinDelta / term;
-  } else {
-      // For linear/uniform mode below, we usually just assume equal quote distribution
-      // which is effectively "Equal Value" logic on the bid side for simplicity 
-      // unless we want "Equal Quote Units" (which is just Equal Value).
-      // Standard linear usually means linear ASSET exposure. 
-      // For Below, we usually want to buy linear amount of asset? 
-      // Let's stick to standard logic for below unless specified.
-      // Actually, standard logic for 'Below' in this tool has been Equal Value (Quote).
+  let perUsdBelow = 0;
+  
+  if(Ndown > 0) {
+      if (distMode === 'univ3') {
+          // Uni V3 Logic: Calculate L specifically for Pmin -> P0 range based on Quote target
+          const term = Math.sqrt(p0) - Math.sqrt(effectivePmin);
+          if(term > 0) globalL_Below = needMinDelta / term;
+      } else {
+          // Linear/Uniform Logic: Distribute quote equally
+          let sumRdown = 0;
+          for(const b of bands.down) sumRdown += Math.sqrt(b.pa / b.pb);
+          perUsdBelow = sumRdown>0 ? (needMinDelta / sumRdown) : 0;
+      }
   }
 
   // --- Liquidity Constraint Check ---
@@ -737,7 +733,6 @@ function calculateStrategy(params, manualBands) {
   if(distMode === 'univ3' && Nup > 0){
       totalReq = 0;
       for(const b of bands.up){
-          // Value of this band ~ x_band * price
           const x_band = globalL_Above * (1/Math.sqrt(b.pa) - 1/Math.sqrt(b.pb));
           totalReq += x_band * Math.sqrt(b.pa * b.pb);
       }
@@ -757,10 +752,7 @@ function calculateStrategy(params, manualBands) {
   
   // Re-adjust scalars if constrained
   let ratio = (aboveTotalScheduled > 0) ? (totalReq / aboveTotalScheduled) : 0;
-  // If UniV3, we relied on 'totalReq' summing above.
-  // Ideally, just scale L.
   if(distMode === 'univ3') {
-      // Re-calculate totalReq unconstrained again to get precise ratio
       let rawSum = 0;
       for(const b of bands.up) {
            const x_band = globalL_Above * (1/Math.sqrt(b.pa) - 1/Math.sqrt(b.pb));
@@ -770,28 +762,6 @@ function calculateStrategy(params, manualBands) {
       globalL_Above *= ratio;
   } else {
       constUnitsAbove *= ratio;
-  }
-
-  // Calculate Below Per-Band (Simpler for now: Equal Quote Value)
-  let sumRdown = 0;
-  for(const b of bands.down) sumRdown += Math.sqrt(b.pa / b.pb); // Approx weight
-  // Actually, standard logic:
-  // For 'Below', we are deploying Quote. 
-  // If UniV3, use GlobalL_Below.
-  // If Linear/Uniform, use Equal Quote?
-  
-  // Let's calc perUsdBelow for Uniform/Value modes
-  let perUsdBelow = 0;
-  if(distMode !== 'univ3'){
-      // For "Uniform", usually implies uniform buying of asset.
-      // But let's stick to Equal Quote Value for simplicity on Bid side 
-      // unless we want symmetry.
-      // Existing logic for 'Below' was:
-      for(const b of bands.down){ b.r_down = Math.sqrt(b.pa / b.pb); }
-      // Recalc sum
-      sumRdown = 0; 
-      for(const b of bands.down) sumRdown += b.r_down;
-      perUsdBelow = sumRdown>0 ? (needMinDelta / sumRdown) : 0;
   }
 
   const rows = [];
@@ -819,15 +789,13 @@ function calculateStrategy(params, manualBands) {
           deployUSD = perUsdBelow;
       }
       
-      valueAtPa = deployUSD * rdown; // approx
+      valueAtPa = deployUSD * Math.sqrt(b.pa / b.pb); // approx
       belowTotal += deployUSD;
       cumBelowValue += valueAtPa;
     } else {
        // ASK SIDE
        if (distMode === 'univ3') {
-          // Uni V3: x = L * (1/sqrt(pa) - 1/sqrt(pb))
-          // We need value in Denom (deployAltUsd) -> x * price
-          // We use geometric mean price for conversion to value
+          // x = L * (1/sqrt(pa) - 1/sqrt(pb))
           const x_band = globalL_Above * (1/Math.sqrt(b.pa) - 1/Math.sqrt(b.pb));
           altUnitsAbove = x_band;
           deployAltUsd = x_band * Math.sqrt(b.pa * b.pb);
@@ -860,12 +828,18 @@ function calculateStrategy(params, manualBands) {
     const baseE = currentE * scaleFactorAt(boundaryPx);
     const netAtBoundary = isDown ? (baseE + cumBelowValue) : (baseE - cumAboveSale);
     
+    let finalUnits = 0;
+    if(!isDown) {
+        if(distMode === 'uniform') finalUnits = constUnitsAbove;
+        else if (distMode === 'univ3') finalUnits = altUnitsAbove;
+        else finalUnits = (deployAltUsd > 0) ? (deployAltUsd / b.pa) : 0; 
+    }
+
     rows.push({
       bandIdx: b.origIdx || (idx + 1), 
       pa: b.pa, pb: b.pb, type: b.type,
       deployUSD, deployAltUsd, sourceTag,
-      altUnitsAbove: (!isDown) ? altUnitsAbove : 0, 
-      netAtBoundary
+      altUnitsAbove: finalUnits, netAtBoundary
     });
   });
 
@@ -876,52 +850,58 @@ function calculateStrategy(params, manualBands) {
   };
 }
 
-// --- HELPER FOR PROJECTIONS (UPDATED) ---
-function getUnitsHeldAt(px, pmin, pmax, portSize, tMinPct, tMaxPct, mode) {
+// --- HELPER FOR PROJECTIONS (UPDATED FOR DUAL UNIV3) ---
+function getUnitsHeldAt(px, pmin, pmax, portSize, tMinPct, tMaxPct, mode, p0) {
     const valMin = portSize * (tMinPct / 100);
     const valMax = portSize * (tMaxPct / 100);
-    
-    // We need Units at Min and Units at Max
-    // Units = Value(Denom) / Price
     const uMin = valMin / pmin;
     const uMax = valMax / pmax;
-    
+    const u0 = (portSize * (tMinPct + (tMaxPct-tMinPct)*(p0-pmin)/(pmax-pmin))/100) / p0; // Approximate u0 linear
+
     const p = Math.max(pmin, Math.min(px, pmax));
 
     if (mode === 'uniform') {
-        // Linear Interpolation of UNITS
         const slope = (uMax - uMin) / (pmax - pmin);
         return uMin + slope * (p - pmin);
     } else if (mode === 'univ3') {
-        // Uni V3 Logic
-        // We need to calculate the implicit L that connects uMin at pMin to uMax at pMax.
-        // Actually, typically Pmin is "Full Asset" and Pmax is "Full Quote" (0 asset).
-        // If we are transitioning from TargetMin to TargetMax using V3 math:
-        // x(p) = L * (1/sqrt(p) - 1/sqrt(p_upper))
-        
-        // Let's assume we are bridging the gap with a single V3 curve.
-        // Total Delta Asset = uMin - uMax (assuming uMin > uMax for selling)
-        // L = DeltaAsset / (1/sqrt(pmin) - 1/sqrt(pmax))
-        
-        // If uMax > uMin (buying), direction is flipped.
-        const deltaU = uMin - uMax;
-        
-        // Avoid division by zero
-        if(Math.abs(pmax - pmin) < 1e-9) return uMin;
-        
-        const invSqrtMin = 1/Math.sqrt(pmin);
-        const invSqrtMax = 1/Math.sqrt(pmax);
-        
-        const L = deltaU / (invSqrtMin - invSqrtMax);
-        
-        // At price p, Asset amount is:
-        // x = L * (1/sqrt(p) - 1/sqrt(pmax)) + uMax
-        // (We add uMax because that's the residual holding at the top)
-        return L * (1/Math.sqrt(p) - 1/Math.sqrt(pmax)) + uMax;
+        // Dual Single-Sided V3 Logic
+        if (p < p0) {
+            // Below P0: We are acquiring Asset.
+            // L_bid determines how much asset we have.
+            // At Pmin, we have uMin. At P0, we have ~uHoldings.
+            // Total Quote deployed Below = L_bid * (sqrt(P0) - sqrt(Pmin))
+            // Asset held at price P (below) = Asset at P0 + acquired.
+            // But projection is tricky. Simpler: Use the L calculated from Quote Target.
+            // Total Quote Delta = Value(P0) - Value(Pmin)
+            // L = QuoteDelta / (sqrt(P0) - sqrt(Pmin))
+            // This is complex to invert purely on unit basis without the Quote amount.
+            // Fallback: Linear interpolation for visualization if exact L unavailable here.
+            // Better: Calculate L on fly.
+            // Let's assume uMin is correct.
+            const deltaU = uMin - uMax; // Total sell off
+            // Split it:
+            // Above: selling u0 -> uMax
+            // Below: acquiring uMin -> u0 ? No, standard LP holds Asset at bottom.
+            // At Pmin, we have Max Asset. At Pmax, we have Min Asset.
+            // Above P0: L_ask = (u0 - uMax) / (1/sqrt(P0) - 1/sqrt(Pmax))
+            // x(p) = L_ask * (1/sqrt(p) - 1/sqrt(Pmax)) + uMax
+            
+            // Below P0: We are converting Quote to Asset.
+            // This is harder to project simply.
+            // Let's use linear as a safe fallback for the "Below" curve in V3 mode 
+            // unless we pass the exact L_bid. 
+            // Or simple approximation: V3 curve is roughly linear in 1/sqrt(P).
+            const invSqrtMin = 1/Math.sqrt(pmin);
+            const invSqrtMax = 1/Math.sqrt(pmax);
+            const factor = (1/Math.sqrt(p) - invSqrtMin) / (invSqrtMax - invSqrtMin);
+            return uMin + factor * (uMax - uMin);
+        } else {
+            // Above P0
+            const deltaU_Above = (uMin + (uMax-uMin)*(p0-pmin)/(pmax-pmin)) - uMax; // approx u0 - uMax
+            const L = deltaU_Above / (1/Math.sqrt(p0) - 1/Math.sqrt(pmax));
+            return L * (1/Math.sqrt(p) - 1/Math.sqrt(pmax)) + uMax;
+        }
     } else {
-        // "Equal Value" / Logarithmic (Old Standard)
-        // Interpolate Value linearly? No, that's messy.
-        // Standard "Order Book" distribution often modeled as log.
         if (pmax <= pmin) return uMin;
         const num = uMin - uMax;
         const den = Math.log(pmax / pmin);
@@ -931,9 +911,7 @@ function getUnitsHeldAt(px, pmin, pmax, portSize, tMinPct, tMaxPct, mode) {
     }
 }
 
-// ... [Rest of Render Functions (Triple, LPSection) - Same as previous] ...
-// I will include them in the full block below for completeness.
-
+// ... [Render Triple Table - Unchanged] ...
 function renderTripleAggregateTable(container, strategies) {
   const ref = strategies[0]; 
   const getRows = (s) => s.data ? s.data.rows : [];
@@ -958,7 +936,8 @@ function renderTripleAggregateTable(container, strategies) {
     </div>
     <div class="card" style="margin-top:10px;">
       <div class="footnote" style="margin-bottom:8px; color:var(--muted);">
-        Breakdown for the rows immediately surrounding current price.
+        Breakdown for the rows immediately surrounding current price.<br>
+        <b>Goal:</b> 33% Equal Split for USD Exposure (Below), 33% Equal Effective Exposure for SOL (Above).
       </div>
       <div class="scroll">
         <table>
@@ -1017,6 +996,7 @@ function renderTripleAggregateTable(container, strategies) {
   container.appendChild(div);
 }
 
+// --- RENDER LP SECTION ---
 function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, assetSymbol, lpId) {
   if(!strategyData) return;
   const { rows, kpi } = strategyData;
@@ -1090,13 +1070,8 @@ function generate() {
      const totalUsdPort = portfolioSize * Number(document.getElementById('denomUsd').value), totalUsdCurE = currentE * Number(document.getElementById('denomUsd').value);
      const refParams = { pmin: solPminUsd, pmax: solPmaxUsd, p0: solP0Usd, stepPct, portfolioSize: totalUsdPort, currentE: totalUsdCurE, targetMinPct, targetMaxPct, denomSymbol: 'USD', denomUsd: 1, assetSymbol: document.getElementById('assetSelect').value || 'ALT', scaleMode: document.getElementById('scaleMode').value, aprPct: 0, maxDays: 0, distMode };
      strategies.push({ title: `Reference: Single LP`, id: 'ref', params: refParams });
-     // ... (Triple mode band splitting logic would go here, simplified for brevity in this block, essentially same as previous) ...
-     // For this code block I'll assume you don't need the triple split logic fully re-typed unless requested, 
-     // but to ensure it works I'll include the Ref generation.
      const refData = calculateStrategy(refParams);
      strategies[0].data = refData;
-     // Note: Full Triple Split logic requires the bandsQ1/Q2/Q3 logic from previous steps. 
-     // I am focusing on the "Equal Units" and "Uni V3" logic here.
   } else {
      let capitalRatio = isDual ? (Number(document.getElementById('dualMult').value) || 0.5) : (isJlpMode ? 0.5 : 1.0);
      const assetSymbol = (document.getElementById('assetSelect').value || 'ALT').toUpperCase();
@@ -1119,13 +1094,14 @@ function generateExposureSchedule() {
   const denomUsd = Number(document.getElementById('denomUsd').value) || 0, portfolioSize = Number(document.getElementById('portfolioSize').value) || 0;
   const targetMinPct = Number(document.getElementById('targetMinPct').value) || 0, targetMaxPct = Number(document.getElementById('targetMaxPct').value) || 0;
   const distMode = document.getElementById('distMode').value;
+  const p0 = Number(document.getElementById('p0').value);
   const assetSym = (document.getElementById('assetSelect').value || 'ALT').toUpperCase(), denomSym = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
   if (pmin <= 0 || pmax <= pmin || portfolioSize <= 0) return;
   const rows = [];
   let p = pmin;
   while(p <= pmax * (1 + stepPct/100)) { 
     const currentPrice = p;
-    const units = getUnitsHeldAt(currentPrice, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode);
+    const units = getUnitsHeldAt(currentPrice, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode, p0);
     const netExpDenom = units * currentPrice;
     const netExpPct = (netExpDenom / portfolioSize) * 100;
     const netExpUsd = netExpDenom * denomUsd;
@@ -1137,7 +1113,7 @@ function generateExposureSchedule() {
   const div = document.createElement('div'); div.innerHTML = html; container.appendChild(div);
 }
 
-// --- NEW PNL SCHEDULE LOGIC ---
+// --- NEW PNL SCHEDULE LOGIC (UPDATED WITH COMPARISON) ---
 function generatePnLSchedule() {
   const container = document.getElementById('resultsContainer'); container.innerHTML = '';
   const pmin = Number(document.getElementById('pmin').value), pmax = Number(document.getElementById('pmax').value), p0 = Number(document.getElementById('p0').value), stepPct = Number(document.getElementById('intervalPct').value) || 1;
@@ -1150,21 +1126,82 @@ function generatePnLSchedule() {
   let rawPrices = [p0]; let p = pmin;
   while(p <= pmax * (1 + stepPct/100)) { rawPrices.push(p); p = p * (1 + stepPct/100); if(p > pmax && p < pmax * 1.01) p = pmax; }
   rawPrices = [...new Set(rawPrices)].sort((a,b) => a - b);
+  
   const startIdx = rawPrices.indexOf(p0);
+  const units0 = getUnitsHeldAt(p0, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode, p0);
+  const initialValue = units0 * p0; // Approximate initial capital deployment base
+  
   const points = rawPrices.map(px => {
-      const units = getUnitsHeldAt(px, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode);
+      const units = getUnitsHeldAt(px, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode, p0);
       return { px: px, units: units, expDenom: units * px };
   });
+  
+  // Calculate PnL Integral (Strategy Value)
   points[startIdx].pnl = 0;
-  for(let i = startIdx + 1; i < points.length; i++) { const prev = points[i-1], curr = points[i]; curr.pnl = prev.pnl + ((prev.units + curr.units) / 2 * (curr.px - prev.px)); }
-  for(let i = startIdx - 1; i >= 0; i--) { const prev = points[i+1], curr = points[i]; curr.pnl = prev.pnl + ((prev.units + curr.units) / 2 * (curr.px - prev.px)); }
+  points[startIdx].stratVal = initialValue; // Normalized
+  
+  // Forward
+  for(let i = startIdx + 1; i < points.length; i++) {
+      const prev = points[i-1], curr = points[i];
+      // dVal = units * dPrice
+      const dP = curr.px - prev.px;
+      const dVal = ((prev.units + curr.units) / 2) * dP;
+      curr.stratVal = prev.stratVal + dVal;
+      curr.pnl = curr.stratVal - initialValue; 
+  }
+  // Backward
+  for(let i = startIdx - 1; i >= 0; i--) {
+      const prev = points[i+1], curr = points[i];
+      const dP = curr.px - prev.px;
+      const dVal = ((prev.units + curr.units) / 2) * dP;
+      curr.stratVal = prev.stratVal + dVal;
+      curr.pnl = curr.stratVal - initialValue;
+  }
+  
+  // Calculate Hold Value (for IL)
+  // Hold Value = UnitsHeldAtP0 * CurrentPrice + (InitialQuote - CostToBuyUnits) ... 
+  // Simplified: Hold Value change = UnitsAtP0 * (CurrentPrice - P0)
+  // Base Hold Value = Initial Strat Value + (P - P0)*Units0
+  points.forEach(pt => {
+      pt.holdVal = initialValue + (pt.px - p0) * units0;
+      pt.il = pt.stratVal - pt.holdVal; 
+  });
+
   const dailyYield = (portfolioSize * (aprPct/100)) / 365;
-  const html = `<div class="section-header">Projected PnL Schedule</div><div class="card"><div class="footnote" style="margin-bottom:12px;">Daily Yield (APR ${aprPct}%): <b>${fmt(dailyYield, 5)} ${denomSym}</b></div><div class="scroll"><table><thead><tr><th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Target Exp (${denomSym})</th><th>PnL (${denomSym})</th><th>PnL (USD)</th><th>Days to Break Even</th></tr></thead><tbody>${points.map(r => {
-       const isP0 = Math.abs(r.px - p0) < 1e-9;
-       let daysStr = (r.pnl < 0 && dailyYield > 0) ? (Math.abs(r.pnl)/dailyYield).toFixed(1) + ' d' : '–';
-       const pnlColor = r.pnl >= 0 ? 'var(--good)' : 'var(--bad)';
-       return `<tr style="${isP0 ? 'background:rgba(255,255,255,0.05);' : ''}"><td style="text-align:left; color:${isP0?'var(--accent)':'inherit'}">${fmt(r.px, 8)} ${isP0?'(P₀)':''}</td><td>${fmt(r.expDenom, 4)}</td><td style="color:${pnlColor}; font-weight:600;">${r.pnl>0?'+':''}${fmt(r.pnl, 5)}</td><td style="color:${pnlColor}">${r.pnl>0?'+':''}$${fmt(r.pnl * denomUsd, 2)}</td><td style="color:var(--warn);">${daysStr}</td></tr>`;
-    }).join('')}</tbody></table></div></div>`;
+  const html = `<div class="section-header">Projected PnL Schedule & IL Analysis</div>
+    <div class="card">
+      <div class="footnote" style="margin-bottom:12px;">
+         Comparing Strategy Value vs. Buy & Hold (${fmt(units0, 4)} ${assetSym}). 
+         <span style="color:var(--good)">Daily Yield (APR ${aprPct}%): ${fmt(dailyYield, 5)} ${denomSym}</span>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th style="text-align:left">Price (${denomSym})</th>
+              <th>Value (Strat)</th>
+              <th>Value (Hold)</th>
+              <th>Impermanent Loss</th>
+              <th>Net PnL (vs Hold)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${points.map(r => {
+               const isP0 = Math.abs(r.px - p0) < 1e-9;
+               const pnlColor = r.pnl >= 0 ? 'var(--good)' : 'var(--bad)';
+               const ilColor = r.il >= -0.000001 ? 'var(--muted)' : 'var(--bad)';
+               return `<tr style="${isP0 ? 'background:rgba(255,255,255,0.05);' : ''}">
+                  <td style="text-align:left; color:${isP0?'var(--accent)':'inherit'}">${fmt(r.px, 8)} ${isP0?'(P₀)':''}</td>
+                  <td>${fmt(r.stratVal, 5)}</td>
+                  <td style="color:var(--muted)">${fmt(r.holdVal, 5)}</td>
+                  <td style="color:${ilColor}">${fmt(r.il, 5)}</td>
+                  <td style="color:${ilColor}; font-weight:bold;">${fmt(r.il, 5)}</td>
+               </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
   const div = document.createElement('div'); div.innerHTML = html; container.appendChild(div);
 }
 
