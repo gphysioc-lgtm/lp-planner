@@ -289,16 +289,16 @@
         </select>
       </div>
       <div>
-        <label style="color:var(--warn)">Active Capital Util. (%)</label>
-        <input type="number" id="activeLiquidityPct" step="1" value="100" title="What % of the portfolio is deployed in tight ranges?">
+        <label style="color:var(--good)">Active % (Below)</label>
+        <input type="number" id="activeUtilBelow" step="1" value="10" title="% of Bid Side Capital actively deployed">
+      </div>
+      <div>
+        <label style="color:var(--accent)">Active % (Above)</label>
+        <input type="number" id="activeUtilAbove" step="1" value="10" title="% of Ask Side Capital actively deployed">
       </div>
       <div>
         <label>APR on Active Capital (%)</label>
         <input type="number" id="aprPct" step="0.01" value="20">
-      </div>
-      <div>
-        <label>Max days in-range to simulate</label>
-        <input type="number" id="maxDays" step="1" value="365">
       </div>
     </div>
     
@@ -1106,21 +1106,69 @@ function generateExposureSchedule() {
   const div = document.createElement('div'); div.innerHTML = html; container.appendChild(div);
 }
 
-// --- NEW PNL SCHEDULE LOGIC (UPDATED FOR EFFECTIVE APR) ---
+// --- NEW PNL SCHEDULE LOGIC (FIXED FOR ACTUAL CAPITAL) ---
 function generatePnLSchedule() {
   const container = document.getElementById('resultsContainer'); container.innerHTML = '';
-  const pmin = Number(document.getElementById('pmin').value), pmax = Number(document.getElementById('pmax').value), p0 = Number(document.getElementById('p0').value), stepPct = Number(document.getElementById('intervalPct').value) || 1;
-  const denomUsd = Number(document.getElementById('denomUsd').value) || 0, portfolioSize = Number(document.getElementById('portfolioSize').value) || 0;
-  const targetMinPct = Number(document.getElementById('targetMinPct').value) || 0, targetMaxPct = Number(document.getElementById('targetMaxPct').value) || 0;
+  
+  // Basic Params
+  const pmin = Number(document.getElementById('pmin').value);
+  const pmax = Number(document.getElementById('pmax').value);
+  const p0 = Number(document.getElementById('p0').value);
+  const stepPct = Number(document.getElementById('intervalPct').value) || 1;
+  const denomUsd = Number(document.getElementById('denomUsd').value) || 0;
+  const portfolioSize = Number(document.getElementById('portfolioSize').value) || 0;
+  const targetMinPct = Number(document.getElementById('targetMinPct').value) || 0;
+  const targetMaxPct = Number(document.getElementById('targetMaxPct').value) || 0;
+  const currentE = Number(document.getElementById('currentE').value) || 0;
   const distMode = document.getElementById('distMode').value;
+  const scaleMode = document.getElementById('scaleMode').value;
   
-  // APR INPUTS
+  // APR INPUTS (Active)
   const aprPct = Number(document.getElementById('aprPct').value) || 0;
-  const activePct = Number(document.getElementById('activeLiquidityPct').value) || 100;
+  const activeBelowPct = Number(document.getElementById('activeUtilBelow').value) || 0;
+  const activeAbovePct = Number(document.getElementById('activeUtilAbove').value) || 0;
+
+  const assetSym = (document.getElementById('assetSelect').value || 'ALT').toUpperCase();
+  const denomSym = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
   
-  const assetSym = (document.getElementById('assetSelect').value || 'ALT').toUpperCase(), denomSym = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
   if (pmin <= 0 || pmax <= pmin || portfolioSize <= 0 || p0 <= 0) return;
   
+  // 1. Recalculate the Strategy Data to get the EXACT required capital (Total Below / Total Above)
+  // We re-use the same params logic as 'generate()'
+  const isDual = document.getElementById('dualLpMode').checked;
+  const isJlpMode = document.getElementById('jlpStrategyMode').checked;
+  let capitalRatio = isDual ? (Number(document.getElementById('dualMult').value) || 0.5) : (isJlpMode ? 0.5 : 1.0);
+  
+  const strategyParams = { 
+      pmin, pmax, p0, stepPct, 
+      portfolioSize: portfolioSize * capitalRatio, 
+      currentE: currentE * capitalRatio, 
+      targetMinPct, targetMaxPct, 
+      denomSymbol: denomSym, denomUsd, assetSymbol: assetSym, 
+      scaleMode, aprPct: 0, maxDays: 0, distMode 
+  };
+  
+  const stratData = calculateStrategy(strategyParams);
+  
+  if (!stratData || !stratData.kpi) return;
+  
+  // Capital Required for the Strategy (in Denom/BTC)
+  // Note: 'aboveTotal' is returned by calculateStrategy as Value in Denom.
+  // 'belowTotal' is Quote Amount (Denom).
+  const stratCapBelow = stratData.kpi.belowTotal;
+  const stratCapAbove = stratData.kpi.aboveTotal;
+  const stratCapTotal = stratCapBelow + stratCapAbove;
+  
+  // 2. Calculate Active Capital based on User Inputs
+  const activeCapBelow = stratCapBelow * (activeBelowPct / 100);
+  const activeCapAbove = stratCapAbove * (activeAbovePct / 100);
+  const totalActiveCap = activeCapBelow + activeCapAbove;
+  
+  // 3. Calculate Daily Yield
+  const dailyYield = (totalActiveCap * (aprPct / 100)) / 365;
+  const effectiveGlobalApr = stratCapTotal > 0 ? ((dailyYield * 365) / stratCapTotal) * 100 : 0;
+  
+  // 4. Generate PnL Points
   let rawPrices = [p0]; let p = pmin;
   while(p <= pmax * (1 + stepPct/100)) { rawPrices.push(p); p = p * (1 + stepPct/100); if(p > pmax && p < pmax * 1.01) p = pmax; }
   rawPrices = [...new Set(rawPrices)].sort((a,b) => a - b);
@@ -1133,11 +1181,22 @@ function generatePnLSchedule() {
   for(let i = startIdx + 1; i < points.length; i++) { const prev = points[i-1], curr = points[i]; curr.pnl = prev.pnl + ((prev.units + curr.units) / 2 * (curr.px - prev.px)); }
   for(let i = startIdx - 1; i >= 0; i--) { const prev = points[i+1], curr = points[i]; curr.pnl = prev.pnl + ((prev.units + curr.units) / 2 * (curr.px - prev.px)); }
   
-  // Effective APR Logic
-  const effectiveApr = aprPct * (activePct / 100);
-  const dailyYield = (portfolioSize * (effectiveApr/100)) / 365;
-  
-  const html = `<div class="section-header">Projected PnL Schedule</div><div class="card"><div class="footnote" style="margin-bottom:12px;">Effective APR: <b>${fmt(effectiveApr, 2)}%</b> (Based on ${fmt(aprPct,0)}% APR on ${activePct}% Active Capital)<br>Daily Yield: <b>${fmt(dailyYield, 5)} ${denomSym}</b></div><div class="scroll"><table><thead><tr><th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Target Exp (${denomSym})</th><th>PnL (${denomSym})</th><th>PnL (USD)</th><th>Days to Break Even</th></tr></thead><tbody>${points.map(r => {
+  const html = `
+    <div class="section-header">Projected PnL Schedule</div>
+    <div class="summary-box">
+       <div class="summary-row">
+          <div class="summary-item"><label>Total Strategy Capital</label><div>${fmt(stratCapTotal, 4)} ${denomSym}</div></div>
+          <div class="summary-item"><label>Active Capital (Deployed)</label><div style="color:var(--accent)">${fmt(totalActiveCap, 4)} ${denomSym}</div></div>
+          <div class="summary-item"><label>Daily Yield (${aprPct}%)</label><div style="color:var(--good)">${fmt(dailyYield, 5)} ${denomSym}</div></div>
+          <div class="summary-item"><label>Effective Global APR</label><div>${fmt(effectiveGlobalApr, 2)}%</div></div>
+       </div>
+       <div style="font-size:11px; color:var(--muted); margin-top:5px;">
+         Active Below: ${fmt(activeCapBelow, 4)} ${denomSym} (${activeBelowPct}%) &nbsp;|&nbsp; 
+         Active Above: ${fmt(activeCapAbove, 4)} ${denomSym} (${activeAbovePct}%)
+       </div>
+    </div>
+    <div class="card">
+    <div class="scroll"><table><thead><tr><th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Target Exp (${denomSym})</th><th>PnL (${denomSym})</th><th>PnL (USD)</th><th>Days to Break Even</th></tr></thead><tbody>${points.map(r => {
        const isP0 = Math.abs(r.px - p0) < 1e-9;
        let daysStr = (r.pnl < 0 && dailyYield > 0) ? (Math.abs(r.pnl)/dailyYield).toFixed(1) + ' d' : '–';
        const pnlColor = r.pnl >= 0 ? 'var(--good)' : 'var(--bad)';
