@@ -382,6 +382,22 @@ function updateUsdFromP0() {
     }
 }
 
+// --- NEW: AUTO UPDATE TARGETS FUNCTION ---
+function updateAutoTargets() {
+    const portSize = Number(document.getElementById('portfolioSize').value) || 0;
+    const minPct = Number(document.getElementById('targetMinPct').value) || 0;
+    const maxPct = Number(document.getElementById('targetMaxPct').value) || 0;
+    const targetMinEl = document.getElementById('targetMin');
+    const targetMaxEl = document.getElementById('targetMax');
+    
+    // Calculate values (Percentage of Portfolio Size)
+    const tMin = portSize * (minPct / 100.0);
+    const tMax = portSize * (maxPct / 100.0);
+    
+    targetMinEl.value = tMin.toFixed(4);
+    targetMaxEl.value = tMax.toFixed(4);
+}
+
 // --- LIVE EXPOSURE (Independent Fetch) ---
 let fetchTimeout = null;
 
@@ -604,6 +620,9 @@ async function loadAssetConfig(symbol){
     if(typeof data.portfolioSize === 'number') document.getElementById('portfolioSize').value = data.portfolioSize;
     if(typeof data.targetMinPct === 'number') document.getElementById('targetMinPct').value = data.targetMinPct;
     if(typeof data.targetMaxPct === 'number') document.getElementById('targetMaxPct').value = data.targetMaxPct;
+
+    // --- FIX: Force update of read-only targets after load ---
+    updateAutoTargets();
 
     let denomSym = 'BTC';
     if(data.denomAsset){
@@ -1222,6 +1241,13 @@ function generatePnLSchedule() {
   dual.addEventListener('change', function(){ if(this.checked) { jlp.checked=false; triple.checked=false; } });
   jlp.addEventListener('change', function(){ if(this.checked) { dual.checked=false; triple.checked=false; } });
   triple.addEventListener('change', function(){ if(this.checked) { dual.checked=false; jlp.checked=false; } });
+
+  // --- NEW: LISTENERS FOR AUTO TARGETS ---
+  const autoTargetInputs = ['portfolioSize', 'targetMinPct', 'targetMaxPct'];
+  autoTargetInputs.forEach(id => {
+      const el = document.getElementById(id);
+      if(el) el.addEventListener('input', updateAutoTargets);
+  });
 
   if(altUsdEl) altUsdEl.addEventListener('input', updateP0FromUsd);
   if(denomUsdEl) denomUsdEl.addEventListener('input', updateP0FromUsd);
