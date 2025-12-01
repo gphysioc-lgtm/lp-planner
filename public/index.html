@@ -314,10 +314,8 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 // --- YOUR CONFIG ---
-// This is the URL you provided.
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzATG0fdL2b6eMTw2CZcurw3BsNn1UzF0DsNRHdWpvoX8Ymr2UQGjuPjzSF2X_R9Sl8HA/exec';
 
-// UPDATED COINGECKO MAP based on your sheet
 const COINGECKO_IDS = {
   BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', BNB: 'binancecoin',
   ARB: 'arbitrum', OP: 'optimism', TIA: 'celestia', MATIC: 'matic-network',
@@ -355,7 +353,7 @@ function updateDenomLabels(sym){
   document.querySelectorAll('.denomLabelShort').forEach(el => { el.textContent = s; });
 }
 
-// --- SYNC FUNCTIONS (Bi-Directional) ---
+// --- SYNC FUNCTIONS (Bi-Directional + Reactivity) ---
 function updateP0FromUsd() {
     const altUsd = Number(document.getElementById('altUsd').value || 0);
     const denomUsd = Number(document.getElementById('denomUsd').value || 0);
@@ -378,9 +376,28 @@ function updateUsdFromP0() {
     }
 }
 
+// NEW: REACTIVITY FUNCTION (Calculates the Blue Boxes)
+function updateCalculatedFields() {
+    // 1. Update Targets
+    const size = Number(document.getElementById('portfolioSize').value || 0);
+    const minPct = Number(document.getElementById('targetMinPct').value || 0);
+    const maxPct = Number(document.getElementById('targetMaxPct').value || 0);
+    
+    document.getElementById('targetMin').value = (size * minPct / 100).toFixed(4);
+    document.getElementById('targetMax').value = (size * maxPct / 100).toFixed(4);
+
+    // 2. Try to update P0 if valid
+    const altUsd = Number(document.getElementById('altUsd').value || 0);
+    const denomUsd = Number(document.getElementById('denomUsd').value || 0);
+    if(altUsd > 0 && denomUsd > 0) {
+        // Only update P0 if it is 0 or user is actively typing price
+        const curP0 = Number(document.getElementById('p0').value || 0);
+        if(curP0 === 0) updateP0FromUsd();
+    }
+}
+
 // --- LIVE EXPOSURE (Independent Fetch) ---
 let fetchTimeout = null;
-
 async function fetchLiveExposure() {
   const assetSym = document.getElementById('assetSelect').value;
   const denomUsd = Number(document.getElementById('denomUsd').value || 0);
@@ -487,7 +504,10 @@ async function autoFetchPrices(assetSym, denomSym){
         }
     }
     
+    // FORCE UPDATE P0
     updateP0FromUsd();
+    updateCalculatedFields();
+
     triggerAutoFetch();
     statusEl.textContent = `Prices Updated.`;
     statusEl.style.color = 'var(--good)';
@@ -505,11 +525,6 @@ async function loadAssetList(){
   const sel = document.getElementById('assetSelect');
   const statusEl = document.getElementById('sheetStatus');
   
-  if(!url || url.includes('AKfycbzqG0z2v6nZZZpuhGVYHR28R71jpKl4psheB3bsMQ1bj2Hc4-590l-7Xgj8LUG6cFryMw')) {
-      statusEl.textContent = "Check APPS_SCRIPT_URL variable.";
-      return;
-  }
-
   statusEl.textContent = 'Loading list...';
   sel.innerHTML = '<option value="">Loading...</option>';
   
@@ -566,7 +581,8 @@ async function loadAssetConfig(symbol){
       updateDenomLabels(data.denomAsset);
     }
     
-    autoFetchPrices(symbol, data.denomAsset || 'BTC');
+    await autoFetchPrices(symbol, data.denomAsset || 'BTC');
+    updateCalculatedFields(); // Force Update
     fetchLiveExposure();
     generate(); // Auto-generate on load
 
@@ -692,7 +708,9 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
 
 function generate() {
   const container = document.getElementById('resultsContainer'); container.innerHTML = '';
-  // Basic single strategy generation for brevity
+  // Force update P0 before generation if needed
+  updateCalculatedFields();
+
   const params = {
       pmin: Number(document.getElementById('pmin').value),
       pmax: Number(document.getElementById('pmax').value),
@@ -716,6 +734,10 @@ function generate() {
 (function(){
   const assetSel = document.getElementById('assetSelect');
   const btn = document.getElementById('btn');
+  const inputs = document.querySelectorAll('input');
+
+  // Reactivity: update calcs on any input change
+  inputs.forEach(el => el.addEventListener('input', updateCalculatedFields));
   
   loadAssetList();
   
