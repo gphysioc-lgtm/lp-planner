@@ -3,277 +3,655 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Micro-LP Triangulator</title>
+<title>Cross-Pair Rebalancing Planner</title>
 <style>
   :root {
     --bg:#0b0f14; --card:#101620; --ink:#e8eef6; --muted:#9fb1c7;
     --accent:#5bb0ff; --good:#17c964; --bad:#ff5d5d; --warn:#ffc857;
-    --highlight:#334255; --purple:#b580ff; --cyan:#00f2ea;
+    --highlight:#334255; --border:#17202d;
   }
   * { box-sizing:border-box; }
   body {
     margin:0; font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial;
     background:var(--bg); color:var(--ink);
   }
-  .wrap { padding:16px 18px 36px; max-width:1400px; margin:0 auto; }
+  header {
+    padding:16px 18px; border-bottom:1px solid var(--border);
+    position:sticky; top:0;
+    background:linear-gradient(180deg,#0b0f14,#0b0f14f2 70%,transparent);
+    z-index:10;
+  }
+  h1 { margin:0; font-size:15px; letter-spacing:.3px; font-weight:600; color:var(--accent); }
+  .wrap { padding:16px 18px 36px; max-width:2000px; margin:0 auto; }
   
+  /* GRID LAYOUTS */
+  .main-grid { display:grid; grid-template-columns: 320px 1fr; gap:16px; align-items:start; }
+  .col-2 { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  .col-3 { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; }
+  .col-4 { display:grid; grid-template-columns: repeat(4,1fr); gap:8px; }
+
   .card {
-    background:var(--card); border:1px solid #17202d; border-radius:16px;
+    background:var(--card); border:1px solid var(--border); border-radius:12px;
     padding:14px; box-shadow:0 4px 24px rgba(0,0,0,.25); margin-bottom: 14px;
   }
-  .card h2 { margin:0 0 8px; font-size:14px; font-weight:600; color:var(--ink); }
-  
-  /* Grid Layouts */
-  .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-  .grid-4 { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:12px; }
-  
-  label { display:block; color:var(--muted); font-size:11px; margin:6px 0 3px; }
-  input[type=number], select {
-    width:100%; padding:8px 10px; border:1px solid #233142;
-    border-radius:10px; background:#0c121a; color:var(--ink); outline:none;
+  .card-header {
+    display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:12px; padding-bottom:8px; border-bottom:1px solid var(--border);
   }
+  .card h2 { margin:0; font-size:13px; font-weight:700; color:var(--ink); }
+
+  label { display:block; color:var(--muted); font-size:11px; margin:0 0 4px; }
+  input[type=number], select {
+    width:100%; padding:6px 8px; border:1px solid #233142;
+    border-radius:6px; background:#0c121a; color:var(--ink); outline:none;
+    font-family:inherit; font-size:12px;
+  }
+  input[readonly] { background: #161e2b; color: var(--muted); border-color:transparent; }
+  input:focus, select:focus { border-color:var(--accent); }
+
+  /* BUTTONS */
+  .btns { display:flex; gap:8px; margin-top:16px; }
+  button {
+    flex:1; padding:8px 10px; border:1px solid #223146; background:#0e1621;
+    color:var(--ink); border-radius:8px; cursor:pointer; transition:.15s ease;
+    font-weight:500; font-size:12px;
+  }
+  button.primary { background:var(--accent); color:#000; border-color:var(--accent); font-weight:700; }
+  button.primary:hover { opacity:0.9; }
+  button.secondary { background:#1a2a3d; color:#a7c4e6; }
+  button.secondary:hover { background:#23364d; }
+
+  /* TABLE */
+  .table-wrap { overflow:auto; max-height:65vh; border:1px solid var(--border); border-radius:8px; }
+  table { width:100%; border-collapse:separate; border-spacing:0; min-width:800px; }
+  th, td { padding:6px 10px; border-bottom:1px solid #1a2433; text-align:right; white-space:nowrap; font-size:12px; }
+  th {
+    position:sticky; top:0; background:#0f1622; z-index:2;
+    font-weight:600; color:#b9cbe0; text-align:right;
+  }
+  th:first-child, td:first-child { position:sticky; left:0; background:#0f1622; z-index:3; text-align:left; border-right:1px solid #1a2433; }
+  
+  /* UTILS */
+  .pill { display:inline-block; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:600; background:#1a2433; color:#a7c4e6; }
+  .mono { font-family: 'SF Mono', Consolas, monospace; }
+  .text-good { color:var(--good); }
+  .text-bad { color:var(--bad); }
+  .text-accent { color:var(--accent); }
   
   .asset-box {
-      border: 1px solid #233142; border-radius: 12px; padding: 10px; background: #0d1219;
-      margin-bottom: 10px; position:relative;
+    background:#080c11; border:1px solid #1a2433; padding:8px; border-radius:6px; margin-bottom:8px;
   }
-  .asset-box.primary { border-color: var(--accent); }
-  .asset-box.quote { border-color: var(--purple); }
-  .asset-title { font-size: 11px; text-transform: uppercase; font-weight: 700; margin-bottom: 8px; display:flex; justify-content:space-between;}
+  .asset-title { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; margin-bottom:6px; display:flex; justify-content:space-between; }
   
-  .micro-card {
-      background: #151a24; border: 1px solid #333; border-radius: 8px; padding: 12px;
-      margin-top: 10px;
-  }
-  .micro-header { font-size: 12px; font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .micro-val { font-size: 18px; font-weight: 700; color: var(--ink); }
-  
-  button {
-    padding:8px 10px; border:1px solid #223146; background:linear-gradient(180deg,#1b2c43,#142133);
-    color:var(--ink); border-radius:12px; cursor:pointer; width: 100%; font-weight: 600;
-  }
-  
-  .denom-tag { font-size:9px; background:#222; padding:2px 5px; border-radius:4px; color:#888; border:1px solid #333; }
-  .warn-box { margin-top:10px; padding:8px; border:1px solid var(--warn); color:var(--warn); background:#221a00; border-radius:6px; font-size:11px; display:none; }
+  .summary-grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin-bottom:16px; }
+  .stat-box { background:#0e1622; padding:10px; border-radius:8px; border:1px solid #1a2a3d; }
+  .stat-label { font-size:10px; color:var(--muted); text-transform:uppercase; margin-bottom:4px; }
+  .stat-val { font-size:14px; font-weight:600; color:var(--ink); }
 </style>
 </head>
 <body>
 
+<header>
+  <h1>Cross-Pair Rebalancing Planner</h1>
+</header>
+
 <div class="wrap">
-  <h1>Micro-LP Triangulator (BTC Denominated)</h1>
-
-  <div class="card">
-    <div class="grid-2">
-        <div class="asset-box primary">
-            <div class="asset-title">
-                <span style="color:var(--accent)">Asset A (Driver)</span>
-                <span class="denom-tag">Config Loaded from BTC Sheet</span>
-            </div>
-            <select id="selA"><option>Loading...</option></select>
-            <div class="grid-2" style="margin-top:8px;">
-                <div><label>Current Price (USD)</label><input type="number" id="usd_A" value="0"></div>
-                <div><label>Portfolio Size (Total BTC)</label><input type="number" id="port_A" readonly style="background:#151a24; color:#777;"></div>
-            </div>
-            <div style="font-size:10px; color:var(--muted); margin-top:6px;">
-               Targets: <span id="tMinA">-</span>% to <span id="tMaxA">-</span>%
-            </div>
-        </div>
-
-        <div class="asset-box quote">
-            <div class="asset-title">
-                <span style="color:var(--purple)">Asset B (Quote)</span>
-                <span class="denom-tag">Config Loaded from BTC Sheet</span>
-            </div>
-            <select id="selB"><option>Loading...</option></select>
-            <div class="grid-2" style="margin-top:8px;">
-                <div><label>Current Price (USD)</label><input type="number" id="usd_B" value="0"></div>
-                <div><label>BTC Price (USD)</label><input type="number" id="usd_BTC" value="96000"></div>
-            </div>
-        </div>
-    </div>
+  <div class="main-grid">
     
-    <div class="grid-4" style="margin-top:12px; align-items:end;">
-       <div><label>Micro Range (±%)</label><input type="number" id="microPct" value="5"></div>
-       <div><label>Dist Mode</label><select id="dist"><option value="uniform">Uniform</option><option value="univ3">Uni V3</option></select></div>
-       <div style="grid-column: span 2;">
-           <button onclick="calculateMicro()">Generate Deployment</button>
+    <!-- LEFT SIDEBAR: INPUTS -->
+    <div class="sidebar">
+      
+      <!-- 1. ASSET CONFIGURATION -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Asset Configuration</h2>
+          <span class="pill" id="statusPill">Ready</span>
+        </div>
+        
+        <!-- ASSET A -->
+        <div class="asset-box" style="border-left:2px solid var(--accent);">
+          <div class="asset-title">
+            <span>Base Asset (A)</span>
+            <span id="targetRangeA" style="font-weight:400; color:#666;">--</span>
+          </div>
+          <select id="assetA">
+            <option value="">Select Base...</option>
+          </select>
+          <div class="col-2" style="margin-top:6px;">
+            <div>
+              <label>Current Units</label>
+              <input type="number" id="holdingsA" placeholder="0.00" step="any">
+            </div>
+            <div>
+              <label>Price (USD)</label>
+              <input type="number" id="priceA" placeholder="0.00" step="any">
+            </div>
+          </div>
+        </div>
+
+        <!-- ASSET B -->
+        <div class="asset-box" style="border-left:2px solid var(--good);">
+          <div class="asset-title">
+            <span>Quote Asset (B)</span>
+             <span id="targetRangeB" style="font-weight:400; color:#666;">--</span>
+          </div>
+          <select id="assetB">
+             <option value="BTC" selected>BTC (Default)</option>
+          </select>
+          <div class="col-2" style="margin-top:6px;">
+            <div>
+              <label>Current Units</label>
+              <input type="number" id="holdingsB" placeholder="0.00" step="any">
+            </div>
+            <div>
+              <label>Price (USD)</label>
+              <input type="number" id="priceB" placeholder="0.00" step="any">
+            </div>
+          </div>
+        </div>
+
+        <!-- BTC REF -->
+        <div class="col-2" style="margin-top:8px;">
+           <div>
+             <label>BTC Price (USD)</label>
+             <input type="number" id="priceBTC" value="60000">
+           </div>
+           <div>
+             <label>Pair Price (A/B)</label>
+             <input type="number" id="pricePair" readonly class="text-accent" style="font-weight:bold;">
+           </div>
+        </div>
+        
+        <div style="margin-top:8px; font-size:10px; color:var(--muted); text-align:center;">
+          <a href="#" onclick="fetchAllPrices()" style="color:var(--accent); text-decoration:none;">↻ Refresh Prices</a>
+        </div>
+      </div>
+
+      <!-- 2. STRATEGY -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Strategy Settings</h2>
+        </div>
+        
+        <label>LP Range (Price A/B)</label>
+        <div class="col-2">
+          <input type="number" id="lpMin" placeholder="Min Px" step="any">
+          <input type="number" id="lpMax" placeholder="Max Px" step="any">
+        </div>
+
+        <div class="col-2" style="margin-top:10px;">
+          <div>
+            <label>Interval Step %</label>
+            <input type="number" id="stepPct" value="1.0" step="0.1">
+          </div>
+          <div>
+            <label>Distribution</label>
+            <select id="distMode">
+              <option value="uniform">Linear (Uniform)</option>
+              <option value="univ3">Uni V3 (Curve)</option>
+            </select>
+          </div>
+        </div>
+        
+        <div class="btns">
+          <button class="primary" id="btnGen">Generate Schedule</button>
+          <button class="secondary" onclick="clearResults()">Clear</button>
+        </div>
+      </div>
+      
+      <!-- DEBUG -->
+      <div class="card">
+         <div class="card-header"><h2>Debug/Info</h2></div>
+         <div id="debugLog" style="font-size:10px; color:#555; font-family:monospace; height:100px; overflow:auto;"></div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT CONTENT: OUTPUT -->
+    <div id="resultsArea">
+       <div style="padding:40px; text-align:center; color:var(--muted);">
+         Select assets and click <b>Generate</b> to plan your rebalancing schedule.
        </div>
     </div>
-    <div id="warnMsg" class="warn-box"></div>
+    
   </div>
-
-  <div id="results"></div>
-
 </div>
 
 <script>
+// --- CONFIG ---
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzqG0z2v6nZZZpuhGVYHR28R71jpKl4psheB3bsMQ1bj2Hc4-590l-7Xgj8LUG6cFryMw/exec';
-const COINGECKO_IDS = { BTC:'bitcoin', ETH:'ethereum', SOL:'solana', BNB:'binancecoin', ASTER:'aster-2' };
-let CFG_A = null, CFG_B = null;
 
-function fmt(n,d=2){return Number(n).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});}
+const COINGECKO_IDS = {
+  BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', BNB: 'binancecoin',
+  ARB: 'arbitrum', OP: 'optimism', TIA: 'celestia', MATIC: 'matic-network',
+  LINK: 'chainlink', AVAX: 'avalanche-2', DOGE: 'dogecoin', ADA: 'cardano',
+  ASTER: 'aster-2', JLP: 'jupiter-perpetuals-liquidity-provider-token',
+  HYPE: 'hyperliquid', WIF: 'dogwifcoin'
+};
 
-async function init(){
+// --- STATE ---
+let ASSET_DATA = {
+  A: { config: null, price: 0 },
+  B: { config: null, price: 0 }
+};
+
+// --- UTILS ---
+const log = (msg) => {
+  const el = document.getElementById('debugLog');
+  el.innerHTML += `> ${msg}<br>`;
+  el.scrollTop = el.scrollHeight;
+  console.log(msg);
+};
+const fmt = (n, d=4) => Number(n).toLocaleString(undefined, {minimumFractionDigits:d, maximumFractionDigits:d});
+
+// --- API ---
+async function fetchAssetList() {
+  try {
     const res = await fetch(APPS_SCRIPT_URL);
     const data = await res.json();
-    const sA = document.getElementById('selA'), sB = document.getElementById('selB');
-    sA.innerHTML = sB.innerHTML = '<option value="">- Select -</option>';
-    data.assets.forEach(a=>{ sA.add(new Option(a,a)); sB.add(new Option(a,a)); });
-}
-
-async function load(side, sym){
-    if(!sym) return;
-    const res = await fetch(`${APPS_SCRIPT_URL}?symbol=${sym}`);
-    const d = await res.json();
-    if(side==='A'){
-        CFG_A = d;
-        document.getElementById('tMinA').innerText = d.targetMinPct;
-        document.getElementById('tMaxA').innerText = d.targetMaxPct;
-        document.getElementById('port_A').value = d.portfolioSize;
-    } else { CFG_B = d; }
-    // Fetch prices simplified
-    if(COINGECKO_IDS[sym]) {
-        try {
-            const p = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${COINGECKO_IDS[sym]}&vs_currencies=usd`);
-            const pj = await p.json();
-            document.getElementById(side==='A'?'usd_A':'usd_B').value = pj[COINGECKO_IDS[sym]].usd;
-        } catch(e){}
+    const selA = document.getElementById('assetA');
+    const selB = document.getElementById('assetB');
+    
+    if(data.assets) {
+      data.assets.forEach(sym => {
+        const s = String(sym).trim();
+        if(!s) return;
+        const optA = document.createElement('option'); optA.value=s; optA.textContent=s;
+        const optB = document.createElement('option'); optB.value=s; optB.textContent=s;
+        selA.appendChild(optA);
+        selB.appendChild(optB);
+      });
+      log(`Loaded ${data.assets.length} assets.`);
     }
+  } catch(e) {
+    log('Error loading assets: ' + e.message);
+  }
 }
 
-function getUnitsAtPrice(price_in_BTC, cfg, totalPort_BTC) {
-    // Calculates target exposure (UNITS of Asset) at a specific BTC price
-    // Based on Config Targets
-    const tMinVal = totalPort_BTC * (cfg.targetMinPct / 100);
-    const tMaxVal = totalPort_BTC * (cfg.targetMaxPct / 100);
+async function loadConfig(side, symbol) {
+  if(!symbol || symbol === 'BTC') {
+    // If BTC or empty, use default dummy config
+    ASSET_DATA[side].config = { pmin:0, pmax:999999999, targetMinPct:100, targetMaxPct:100, portfolioSize:0, isNative:true };
+    document.getElementById(`targetRange${side}`).textContent = symbol === 'BTC' ? '(Numeraire)' : '';
+    return;
+  }
+  
+  try {
+    const res = await fetch(`${APPS_SCRIPT_URL}?symbol=${encodeURIComponent(symbol)}`);
+    const data = await res.json();
+    if(data.error) throw new Error(data.error);
     
-    // Units = Value / Price
-    const uMin = tMinVal / cfg.pmin;
-    const uMax = tMaxVal / cfg.pmax;
+    ASSET_DATA[side].config = data;
     
-    // Clamp Price
-    const p = Math.max(cfg.pmin, Math.min(price_in_BTC, cfg.pmax));
+    // Display summary
+    const rangeTxt = `Target: ${data.targetMinPct}% - ${data.targetMaxPct}%`;
+    document.getElementById(`targetRange${side}`).textContent = rangeTxt;
     
-    // Interpolate
-    // Standard "Equal Value" interpolation? Or User defined? 
-    // Let's use Linear Units for simplicity as default or Log for geometric
-    // Using Linear Units interpolation for robustness in calculation
-    const slope = (uMax - uMin) / (cfg.pmax - cfg.pmin);
-    return uMin + slope * (p - cfg.pmin);
+    log(`Loaded config for ${symbol} (${side})`);
+  } catch(e) {
+    log(`Error loading ${symbol}: ${e.message}`);
+    ASSET_DATA[side].config = null;
+  }
 }
 
-function calculateMicro() {
-    const res = document.getElementById('results');
-    const warn = document.getElementById('warnMsg');
-    res.innerHTML = ''; warn.style.display = 'none';
+async function fetchAllPrices() {
+  const symA = document.getElementById('assetA').value;
+  const symB = document.getElementById('assetB').value;
+  const ids = [];
+  
+  const addId = (s) => {
+    if(!s) return;
+    const k = s.toUpperCase();
+    if(COINGECKO_IDS[k]) ids.push(COINGECKO_IDS[k]);
+    else ids.push(k.toLowerCase());
+  }
+  
+  addId(symA);
+  addId(symB);
+  addId('BTC');
+  
+  if(ids.length === 0) return;
+  
+  const uniqueIds = [...new Set(ids)].join(',');
+  log(`Fetching prices for: ${uniqueIds}`);
+  
+  try {
+    const res = await fetch(`/api/price?ids=${uniqueIds}&vs_currencies=usd`);
+    const data = await res.json();
+    
+    const getP = (s) => {
+      if(!s) return 0;
+      const k = s.toUpperCase();
+      const id = COINGECKO_IDS[k] || k.toLowerCase();
+      return data[id] ? data[id].usd : 0;
+    };
+    
+    const pA = getP(symA);
+    const pB = getP(symB);
+    const pBTC = getP('BTC');
+    
+    if(pA) document.getElementById('priceA').value = pA;
+    if(pB) document.getElementById('priceB').value = pB;
+    if(pBTC) document.getElementById('priceBTC').value = pBTC;
+    
+    updateCrossPrice();
+    log('Prices updated.');
+  } catch(e) {
+    log('Price fetch failed: ' + e.message);
+  }
+}
 
-    if(!CFG_A || !CFG_B) { alert("Load both assets."); return; }
-    
-    // 1. Setup Prices
-    const usd_A = Number(document.getElementById('usd_A').value);
-    const usd_B = Number(document.getElementById('usd_B').value);
-    const usd_BTC = Number(document.getElementById('usd_BTC').value);
-    
-    if(!usd_A || !usd_B || !usd_BTC) { alert("Enter USD prices."); return; }
-    
-    // Prices in BTC Terms
-    const P_A_BTC = usd_A / usd_BTC;
-    const P_B_BTC = usd_B / usd_BTC;
-    
-    // Cross Price (A priced in B)
-    const P_Cross = usd_A / usd_B;
-    
-    // 2. Define Micro Ranges
-    const microPct = Number(document.getElementById('microPct').value);
-    
-    // ASK SIDE (Selling A): P_Cross to P_Cross * (1+pct)
-    const P_Upper_Cross = P_Cross * (1 + microPct/100);
-    const P_Lower_Cross = P_Cross * (1 - microPct/100);
-    
-    // 3. Calculate Asset A Delta (The Ask Order)
-    // We need to know: How much A does the schedule require us to SELL if A moves from P_Cross to P_Upper?
-    // Note: We use the BTC prices for the schedule lookup.
-    // At P_Cross, P_A_BTC is roughly current.
-    // At P_Upper_Cross, P_A_BTC is roughly P_A_BTC * (1+pct). (Assuming B_BTC stays const)
-    
-    const P_A_BTC_Start = P_A_BTC;
-    const P_A_BTC_End = P_A_BTC * (1 + microPct/100);
-    
-    const units_A_Start = getUnitsAtPrice(P_A_BTC_Start, CFG_A, CFG_A.portfolioSize);
-    const units_A_End = getUnitsAtPrice(P_A_BTC_End, CFG_A, CFG_A.portfolioSize);
-    
-    // Delta is amount to Sell
-    const deploy_A = Math.max(0, units_A_Start - units_A_End);
-    
-    // 4. Calculate Quote Delta (The Bid Order)
-    // We need to know: How much A does the schedule require us to BUY if A moves from P_Cross down to P_Lower?
-    // And then convert that A value into B (Quote) needed to fund it.
-    
-    const P_A_BTC_Low = P_A_BTC * (1 - microPct/100);
-    const units_A_Low = getUnitsAtPrice(P_A_BTC_Low, CFG_A, CFG_A.portfolioSize);
-    
-    // A to buy
-    const units_A_to_buy = Math.max(0, units_A_Low - units_A_Start);
-    
-    // How much B is needed to buy this A?
-    // Roughly: Units_A * Average_Price_B
-    // Avg Price B over range P_Lower to P_Cross. 
-    // Use Geometric Mean of range in Cross terms
-    const avg_P_Cross = Math.sqrt(P_Cross * P_Lower_Cross);
-    const deploy_B = units_A_to_buy * avg_P_Cross;
-    
-    // 5. Gap Analysis (Inventory Check)
-    // Does the user have enough TOTAL B to support the whole curve?
-    // Total B Needed for Curve = (Max_A_Units_Possible * AvgPrice) ?? 
-    // Simpler: Just check if we have enough for this micro band for now.
-    // But ideally, warn if B reserves are low.
-    
-    // RENDER
-    const symA = document.getElementById('selA').value;
-    const symB = document.getElementById('selB').value;
-    
-    let html = `
-    <div class="grid-2">
-        <div class="micro-card" style="border-top: 3px solid var(--accent);">
-            <div class="micro-header" style="color:var(--accent)">1. Ask Side (Sell ${symA})</div>
-            <div style="font-size:11px; color:var(--muted); margin-bottom:4px;">
-               Range: ${fmt(P_Cross, 4)} → ${fmt(P_Upper_Cross, 4)} ${symB}
-            </div>
-            <div class="micro-val">${fmt(deploy_A, 4)} ${symA}</div>
-            <div style="font-size:10px; color:#666; margin-top:4px;">
-               Single-sided ${symA} deposit.<br>
-               (Value: $${fmt(deploy_A * usd_A, 2)})
-            </div>
-        </div>
-        
-        <div class="micro-card" style="border-top: 3px solid var(--purple);">
-            <div class="micro-header" style="color:var(--purple)">2. Bid Side (Buy ${symA})</div>
-            <div style="font-size:11px; color:var(--muted); margin-bottom:4px;">
-               Range: ${fmt(P_Lower_Cross, 4)} → ${fmt(P_Cross, 4)} ${symB}
-            </div>
-            <div class="micro-val">${fmt(deploy_B, 4)} ${symB}</div>
-            <div style="font-size:10px; color:#666; margin-top:4px;">
-               Single-sided ${symB} deposit.<br>
-               (Value: $${fmt(deploy_B * usd_B, 2)})
-            </div>
-        </div>
+function updateCrossPrice() {
+  const pA = Number(document.getElementById('priceA').value || 0);
+  const pB = Number(document.getElementById('priceB').value || 0);
+  const pPair = (pA > 0 && pB > 0) ? (pA / pB) : 0;
+  document.getElementById('pricePair').value = pPair.toFixed(8);
+}
+
+// --- LOGIC ---
+function interpolateTargetUnits(config, currentPxBtc) {
+  if (!config) return 0;
+  if (config.isNative) return 999999; // Represents infinite/residual
+  
+  // 1. Get Target Value in BTC
+  const pmin = config.pmin, pmax = config.pmax;
+  const valMin = config.portfolioSize * (config.targetMinPct / 100);
+  const valMax = config.portfolioSize * (config.targetMaxPct / 100);
+  
+  let targetValBtc = 0;
+  
+  if (currentPxBtc <= pmin) targetValBtc = valMin;
+  else if (currentPxBtc >= pmax) targetValBtc = valMax;
+  else {
+    // Linear interp of VALUE
+    const pct = (currentPxBtc - pmin) / (pmax - pmin);
+    targetValBtc = valMin + pct * (valMax - valMin);
+  }
+  
+  // 2. Convert Value to Units
+  // Units = Value(BTC) / Price(Asset/BTC)
+  if (currentPxBtc <= 0) return 0;
+  return targetValBtc / currentPxBtc;
+}
+
+function calculateStrategy() {
+  const symA = document.getElementById('assetA').value;
+  const symB = document.getElementById('assetB').value;
+  const configA = ASSET_DATA.A.config;
+  const configB = ASSET_DATA.B.config;
+  
+  if(!symA || !symB || !configA || !configB) {
+    alert("Please load assets and configs first.");
+    return;
+  }
+
+  // Inputs
+  const unitsA = Number(document.getElementById('holdingsA').value || 0);
+  const unitsB = Number(document.getElementById('holdingsB').value || 0);
+  const priceA_USD = Number(document.getElementById('priceA').value || 0);
+  const priceB_USD = Number(document.getElementById('priceB').value || 0);
+  const priceBTC_USD = Number(document.getElementById('priceBTC').value || 1);
+  
+  const lpMin = Number(document.getElementById('lpMin').value);
+  const lpMax = Number(document.getElementById('lpMax').value);
+  const stepPct = Number(document.getElementById('stepPct').value);
+  const distMode = document.getElementById('distMode').value;
+
+  if(lpMin <= 0 || lpMax <= lpMin || stepPct <= 0) {
+    alert("Invalid Strategy Parameters (Range or Step)");
+    return;
+  }
+
+  // Current State
+  const pairPrice = priceA_USD / priceB_USD;
+  const priceB_BTC = priceB_USD / priceBTC_USD;
+  const priceA_BTC = priceA_USD / priceBTC_USD;
+  
+  // 1. Implied Prices at Boundaries
+  // Assumption: When planning Pair limits, we assume the Quote asset (B) stays roughly stable vs BTC
+  // So the variation comes from A moving.
+  
+  const priceA_BTC_At_LPMax = lpMax * priceB_BTC; // Implied high val of A
+  const priceA_BTC_At_LPMin = lpMin * priceB_BTC; // Implied low val of A (or B is high, effectively same for ratio)
+
+  // 2. Target Checks
+  // A: How much A do I want to hold when A is expensive (LP Max)?
+  const targetUnitsA_Max = interpolateTargetUnits(configA, priceA_BTC_At_LPMax);
+  
+  // B: How much B do I want to hold when A is cheap (LP Min)?
+  // Note: When A is cheap, B is effectively expensive relative to A.
+  // But usually B's BTC target depends on B's BTC price. 
+  // We assume B's BTC price is constant (current).
+  const targetUnitsB_Min = interpolateTargetUnits(configB, priceB_BTC);
+
+  // 3. Surplus Calculation (Liquidity Budget)
+  // Ask Side (Sell A): Surplus = Current A - Target A (at Max)
+  // If we have 100 A, and at Max we only want 20 A, we can sell 80 A.
+  let surplusA = unitsA - targetUnitsA_Max;
+  if (configA.isNative) surplusA = unitsA; // If A is BTC/Native, we assume we use all designated units
+
+  // Bid Side (Buy A with B): Surplus = Current B - Target B (at Min)
+  // Wait, if we buy A, we spend B.
+  // Do we want to hold Target B? Yes.
+  // So any B *above* Target B is available to spend.
+  let surplusB = unitsB - targetUnitsB_Min;
+  if (configB.isNative) surplusB = unitsB; 
+
+  // Guard against negatives (Deficits)
+  const deficitA = surplusA < 0 ? Math.abs(surplusA) : 0;
+  const deficitB = surplusB < 0 ? Math.abs(surplusB) : 0;
+  const liquidA = Math.max(0, surplusA);
+  const liquidB = Math.max(0, surplusB);
+
+  // 4. Build Bands
+  const bands = [];
+  let p = pairPrice;
+  
+  // Down (Bid Side - Consumes B)
+  while(p > lpMin) {
+    const pb = p;
+    let pa = pb * (1 - stepPct/100);
+    if(pa < lpMin) pa = lpMin;
+    bands.push({ pa, pb, type: 'Bid', w: 0 });
+    if(pa <= lpMin) break;
+    p = pa;
+  }
+  
+  // Up (Ask Side - Consumes A)
+  p = pairPrice;
+  while(p < lpMax) {
+    const pa = p;
+    let pb = pa * (1 + stepPct/100);
+    if(pb > lpMax) pb = lpMax;
+    bands.push({ pa, pb, type: 'Ask', w: 0 });
+    if(pb >= lpMax) break;
+    p = pb;
+  }
+  
+  // 5. Distribute Liquidity
+  // Helper for UniV3 L
+  const getL = (amt, pa, pb, isAsset) => {
+    // isAsset=true (A), isAsset=false (B/Quote)
+    const sa = Math.sqrt(pa), sb = Math.sqrt(pb);
+    if(isAsset) {
+      // Amount = A. x = L * (1/sa - 1/sb)
+      return amt / (1/sa - 1/sb);
+    } else {
+      // Amount = B. y = L * (sb - sa)
+      return amt / (sb - sa);
+    }
+  };
+
+  // Bid Side (B) Distribution
+  const bidBands = bands.filter(b => b.type === 'Bid');
+  if(bidBands.length > 0) {
+    if(distMode === 'univ3') {
+       // Global L over range [lpMin, pairPrice] using liquidB
+       const L = getL(liquidB, lpMin, pairPrice, false);
+       bidBands.forEach(b => {
+         // Bin Liquidity = Global L for V3 logic (simplified for allocation)
+         // Actually, let's just calc amounts per bin based on L
+         const y = L * (Math.sqrt(b.pb) - Math.sqrt(b.pa));
+         b.amtB = y;
+         b.amtA = 0;
+       });
+    } else {
+       // Uniform
+       const amtPerBand = liquidB / bidBands.length;
+       bidBands.forEach(b => { b.amtB = amtPerBand; b.amtA = 0; });
+    }
+  }
+
+  // Ask Side (A) Distribution
+  const askBands = bands.filter(b => b.type === 'Ask');
+  if(askBands.length > 0) {
+    if(distMode === 'univ3') {
+       const L = getL(liquidA, pairPrice, lpMax, true);
+       askBands.forEach(b => {
+         const x = L * (1/Math.sqrt(b.pa) - 1/Math.sqrt(b.pb));
+         b.amtA = x;
+         b.amtB = 0;
+       });
+    } else {
+       const amtPerBand = liquidA / askBands.length;
+       askBands.forEach(b => { b.amtA = amtPerBand; b.amtB = 0; });
+    }
+  }
+
+  // 6. Render
+  renderResults({
+    symA, symB, lpMin, lpMax, 
+    unitsA, unitsB, 
+    targetUnitsA_Max, targetUnitsB_Min,
+    liquidA, liquidB, deficitA, deficitB,
+    bands: bands.sort((a,b) => a.pa - b.pa)
+  });
+}
+
+function renderResults(data) {
+  const area = document.getElementById('resultsArea');
+  
+  // Status Color Logic
+  const statusA = data.deficitA > 0 ? `<span class="text-bad">Deficit: ${fmt(data.deficitA)}</span>` : `<span class="text-good">Surplus: ${fmt(data.liquidA)}</span>`;
+  const statusB = data.deficitB > 0 ? `<span class="text-bad">Deficit: ${fmt(data.deficitB)}</span>` : `<span class="text-good">Surplus: ${fmt(data.liquidB)}</span>`;
+
+  let html = `
+    <div class="summary-grid">
+      <div class="stat-box" style="border-color:var(--accent);">
+        <div class="stat-label">${data.symA} Required</div>
+        <div class="stat-val">${fmt(data.liquidA)}</div>
+        <div class="stat-label" style="margin-top:4px;">${statusA}</div>
+      </div>
+      <div class="stat-box" style="border-color:var(--good);">
+        <div class="stat-label">${data.symB} Required</div>
+        <div class="stat-val">${fmt(data.liquidB)}</div>
+        <div class="stat-label" style="margin-top:4px;">${statusB}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Target ${data.symA} @ Pmax</div>
+        <div class="stat-val">${fmt(data.targetUnitsA_Max)}</div>
+        <div class="stat-label">Implied by Planning</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Target ${data.symB} @ Pmin</div>
+        <div class="stat-val">${fmt(data.targetUnitsB_Min)}</div>
+        <div class="stat-label">Implied by Planning</div>
+      </div>
     </div>
+  `;
+  
+  if(data.deficitA > 0 || data.deficitB > 0) {
+    html += `<div style="padding:10px; background:rgba(255,93,93,0.1); border:1px solid var(--bad); border-radius:8px; margin-bottom:16px; font-size:12px; color:#ffadad;">
+      <b>Warning:</b> You have a deficit in one or more assets relative to your targets. 
+      You need to acquire more tokens before you can fully fund this LP strategy, or adjust your LP range/targets.
+    </div>`;
+  }
+
+  html += `
+    <div class="card">
+      <div class="card-header">
+        <h2>Rebalancing Schedule (${data.symA}/${data.symB})</h2>
+        <button class="secondary" style="width:auto; padding:4px 8px; font-size:11px;" onclick="copyTable()">Copy</button>
+      </div>
+      <div class="table-wrap">
+        <table id="scheduleTable">
+          <thead>
+            <tr>
+              <th style="text-align:left;">Range (${data.symA}/${data.symB})</th>
+              <th>Action</th>
+              <th>Deploy ${data.symA}</th>
+              <th>Deploy ${data.symB}</th>
+              <th>Value (USD Approx)</th>
+            </tr>
+          </thead>
+          <tbody>
+  `;
+  
+  const priceA = Number(document.getElementById('priceA').value);
+  const priceB = Number(document.getElementById('priceB').value);
+
+  data.bands.forEach(b => {
+    if((b.amtA + b.amtB) <= 0) return;
     
-    <div style="margin-top:12px; padding:10px; background:#111; border-radius:8px; border:1px solid #222;">
-        <div style="font-size:11px; font-weight:700; color:var(--ink); margin-bottom:4px;">STRATEGY SUMMARY</div>
-        <div style="font-size:11px; color:var(--muted); line-height:1.5;">
-           Based on your BTC-denominated targets, a ${microPct}% move requires reducing your ${symA} position by <strong>${fmt(deploy_A, 2)}</strong> units (selling into ${symB}).
-           <br>Conversely, a -${microPct}% drop requires acquiring <strong>${fmt(units_A_to_buy, 2)}</strong> ${symA} units (funded by <strong>${fmt(deploy_B, 2)} ${symB}</strong>).
-        </div>
-    </div>
+    let action = '', col = '';
+    let valUSD = 0;
+    
+    if(b.type === 'Ask') {
+       action = `Sell ${data.symA}`;
+       col = 'var(--accent)';
+       valUSD = b.amtA * Math.sqrt(b.pa * b.pb) * priceB; // Val in B terms -> USD
+       // Or simpler: b.amtA * priceA
+       valUSD = b.amtA * priceA;
+    } else {
+       action = `Buy ${data.symA}`;
+       col = 'var(--good)';
+       valUSD = b.amtB * priceB;
+    }
+
+    html += `
+      <tr>
+        <td style="text-align:left; font-family:monospace;">${fmt(b.pa, 6)} - ${fmt(b.pb, 6)}</td>
+        <td style="color:${col}; font-weight:600;">${action}</td>
+        <td style="color:${b.amtA>0?'var(--ink)':'#333'}">${b.amtA > 0 ? fmt(b.amtA) : '-'}</td>
+        <td style="color:${b.amtB>0?'var(--ink)':'#333'}">${b.amtB > 0 ? fmt(b.amtB) : '-'}</td>
+        <td style="color:var(--muted);">$${fmt(valUSD, 2)}</td>
+      </tr>
     `;
-    
-    res.innerHTML = html;
+  });
+
+  html += `</tbody></table></div></div>`;
+  area.innerHTML = html;
 }
 
-document.getElementById('selA').addEventListener('change', (e)=>load('A',e.target.value));
-document.getElementById('selB').addEventListener('change', (e)=>load('B',e.target.value));
-init();
+function clearResults() {
+  document.getElementById('resultsArea').innerHTML = '<div style="padding:40px; text-align:center; color:var(--muted);">Results cleared.</div>';
+}
+
+function copyTable() {
+  const el = document.getElementById('scheduleTable');
+  if(!el) return;
+  const range = document.createRange();
+  range.selectNode(el);
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+  document.execCommand('copy');
+  window.getSelection().removeAllRanges();
+  alert("Table copied to clipboard");
+}
+
+// --- EVENTS ---
+document.addEventListener('DOMContentLoaded', () => {
+  fetchAssetList();
+  
+  document.getElementById('assetA').addEventListener('change', (e) => loadConfig('A', e.target.value));
+  document.getElementById('assetB').addEventListener('change', (e) => loadConfig('B', e.target.value));
+  
+  const pInputs = ['priceA','priceB'];
+  pInputs.forEach(id => document.getElementById(id).addEventListener('input', updateCrossPrice));
+  
+  document.getElementById('btnGen').addEventListener('click', calculateStrategy);
+});
+
 </script>
 </body>
 </html>
