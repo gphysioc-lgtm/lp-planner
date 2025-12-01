@@ -316,7 +316,6 @@
 // --- YOUR CONFIG ---
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzATG0fdL2b6eMTw2CZcurw3BsNn1UzF0DsNRHdWpvoX8Ymr2UQGjuPjzSF2X_R9Sl8HA/exec';
 
-// --- FIXED COINGECKO IDS (4-2 included) ---
 const COINGECKO_IDS = {
   BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', BNB: 'binancecoin',
   ARB: 'arbitrum', OP: 'optimism', TIA: 'celestia', MATIC: 'matic-network',
@@ -328,7 +327,7 @@ const COINGECKO_IDS = {
   USELESS: 'useless-2',
   MET: 'metis-token',
   GIGGLE: 'giggle',
-  '4': '4-2', 
+  '4': 'the-4th-pillar', // Attempting an ID, but Manual Entry is king.
   CAKE: 'pancakeswap-token',
   VIRTUALS: 'virtuals-protocol',
   AERO: 'aerodrome-finance',
@@ -380,6 +379,7 @@ function updateUsdFromP0() {
 
 // NEW: MASTER CALCULATOR & AUTO-GENERATOR
 function updateCalculatedFields(shouldGenerate = false) {
+    // 1. Calculate Targets based on Portfolio Size
     const size = Number(document.getElementById('portfolioSize').value || 0);
     const minPct = Number(document.getElementById('targetMinPct').value || 0);
     const maxPct = Number(document.getElementById('targetMaxPct').value || 0);
@@ -387,26 +387,28 @@ function updateCalculatedFields(shouldGenerate = false) {
     document.getElementById('targetMin').value = (size * minPct / 100).toFixed(4);
     document.getElementById('targetMax').value = (size * maxPct / 100).toFixed(4);
 
+    // 2. Trigger P0 Update if user is typing price
+    // Note: We check if active element is NOT P0 to avoid loop
     if (document.activeElement.id !== 'p0') {
         updateP0FromUsd();
     }
 
+    // 3. AUTO-GENERATE if we have a valid P0
+    // This makes the table appear instantly when user types price
     const curP0 = Number(document.getElementById('p0').value || 0);
     if(curP0 > 0 && shouldGenerate) {
         generate(); 
     }
 }
 
-// --- LIVE EXPOSURE (Restored Original Logic) ---
+// --- LIVE EXPOSURE (Independent Fetch) ---
 let fetchTimeout = null;
-
 async function fetchLiveExposure() {
   const assetSym = document.getElementById('assetSelect').value;
   const denomUsd = Number(document.getElementById('denomUsd').value || 0);
   const statusEl = document.getElementById('fetchStatus');
   const currentEEl = document.getElementById('currentE');
   const indEl = document.getElementById('fetchIndicator');
-  const debugBox = document.getElementById('debugBox');
 
   if(!assetSym || assetSym === "") {
     statusEl.textContent = '';
@@ -429,21 +431,13 @@ async function fetchLiveExposure() {
     }
 
     const searchSym = assetSym.toUpperCase();
-    
-    // --- RESTORED ORIGINAL MATCHING LOGIC ---
     const found = dataList.find(p => {
-        const s1 = (p.symbol || '').toUpperCase();
-        const s2 = (p.ticker || '').toUpperCase();
-        const s3 = (p.asset || '').toUpperCase();
-        const s4 = (p.name || '').toUpperCase();
-        return s1 === searchSym || s2 === searchSym || s3 === searchSym || s4.includes(searchSym);
+        const s = (p.symbol||p.ticker||p.asset||'').toUpperCase();
+        return s === searchSym;
     });
 
     if (found) {
-        // --- RESTORED ORIGINAL VALUE EXTRACTION ---
-        // This looks for your custom key: net_exposure_usd_from_base
         const usdVal = Number(found.net_exposure_usd_from_base || 0);
-
         if (!isNaN(usdVal) && usdVal !== 0) {
             const denomExposure = usdVal / denomUsd;
             currentEEl.value = denomExposure.toFixed(6);
@@ -451,7 +445,7 @@ async function fetchLiveExposure() {
             statusEl.style.color = 'var(--good)';
             generate();
         } else {
-            statusEl.textContent = `Found ${assetSym} (Pos: $0)`;
+            statusEl.textContent = `Found ${assetSym}, but 0 exposure.`;
             statusEl.style.color = 'var(--warn)';
         }
     } else {
@@ -506,16 +500,21 @@ async function autoFetchPrices(assetSym, denomSym){
     if(mainIds) {
         mainData = await fetchPriceBatch(mainIds);
         if(mainData) {
+            // Only update Denom if found
             if(!isUsd && denomId && mainData[denomId]?.usd) {
                 document.getElementById('denomUsd').value = mainData[denomId].usd;
             }
+            // SMART FALLBACK: Only update Alt Price if Found & > 0
+            // If failed (0 or undefined), LEAVE THE BOX ALONE or keep 0
             if(assetId && mainData[assetId]?.usd > 0) {
                 document.getElementById('altUsd').value = mainData[assetId].usd;
             }
         }
     }
     
+    // Recalculate P0 immediately
     updateCalculatedFields();
+
     triggerAutoFetch();
     statusEl.textContent = `Prices Updated.`;
     statusEl.style.color = 'var(--good)';
@@ -569,6 +568,7 @@ async function loadAssetConfig(symbol){
   statusEl.textContent = `Loading ${symbol}...`;
 
   try{
+    // Append param to URL
     const fetchUrl = `${url}?symbol=${encodeURIComponent(symbol)}`;
     const res = await fetch(fetchUrl);
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -588,13 +588,15 @@ async function loadAssetConfig(symbol){
       updateDenomLabels(data.denomAsset);
     }
     
+    // Try to fetch prices
     await autoFetchPrices(symbol, data.denomAsset || 'BTC');
     
+    // Check if Alt Price is still 0 (fetch failed)
     const currentAlt = Number(document.getElementById('altUsd').value);
     if (currentAlt === 0) {
         statusEl.innerHTML = `Loaded config. <span style="color:var(--accent)">Enter Price Manually.</span>`;
     } else {
-        generate(); 
+        generate(); // Only auto-generate if price was found
     }
 
   }catch(err){
@@ -719,8 +721,8 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
 
 function generate() {
   const container = document.getElementById('resultsContainer'); container.innerHTML = '';
-  // Force update P0 before generation
-  updateCalculatedFields(false);
+  // Force update P0 before generation if needed
+  updateCalculatedFields(false); // Don't loop
 
   const params = {
       pmin: Number(document.getElementById('pmin').value),
