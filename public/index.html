@@ -46,6 +46,8 @@
     border-radius:6px; background:#0c121a; color:var(--ink); outline:none;
     font-family:inherit; font-size:12px;
   }
+  input[type=checkbox] { width:auto; margin-right:6px; vertical-align:middle; }
+  
   input[readonly] { background: #161e2b; color: var(--muted); border-color:transparent; }
   input:focus, select:focus { border-color:var(--accent); }
 
@@ -60,6 +62,12 @@
   button.primary:hover { opacity:0.9; }
   button.secondary { background:#1a2a3d; color:#a7c4e6; }
   button.secondary:hover { background:#23364d; }
+  
+  .mini-btn {
+    font-size:10px; padding:2px 6px; border-radius:4px; background:#233142; color:#a7c4e6;
+    border:1px solid #344a63; cursor:pointer; display:inline-block; margin-left:6px;
+  }
+  .mini-btn:hover { background:#2d4056; }
 
   /* TABLE */
   .table-wrap { overflow:auto; max-height:65vh; border:1px solid var(--border); border-radius:8px; }
@@ -173,6 +181,22 @@
           <h2>Strategy Settings</h2>
         </div>
         
+        <!-- NEW: EXPLICIT PORTFOLIO SIZE -->
+        <div style="background:#0e1622; padding:8px; border-radius:6px; border:1px solid #233142; margin-bottom:12px;">
+           <label style="color:var(--ink); font-weight:600; margin-bottom:6px;">
+             Total Portfolio Value (BTC)
+           </label>
+           <div style="display:flex; gap:6px;">
+             <input type="number" id="paramPortfolioSize" placeholder="0.00" step="any">
+             <button class="secondary" style="flex:0 0 auto; width:auto; padding:0 8px;" onclick="setPortSizeFromInputs()" title="Calculate size based on Current Units A + B">
+               Set from Inputs
+             </button>
+           </div>
+           <div style="font-size:10px; color:var(--muted); margin-top:4px;">
+             This value determines your Target allocation amounts.
+           </div>
+        </div>
+
         <label>LP Range (Price A/B)</label>
         <div class="col-2">
           <input type="number" id="lpMin" placeholder="Min Px" step="any">
@@ -287,6 +311,12 @@ async function loadConfig(side, symbol) {
     const rangeTxt = `Target: ${data.targetMinPct}% - ${data.targetMaxPct}%`;
     document.getElementById(`targetRange${side}`).textContent = rangeTxt;
     
+    // PRE-FILL Global Portfolio Size if not already set (using first asset loaded)
+    const currentPortSize = document.getElementById('paramPortfolioSize').value;
+    if((!currentPortSize || currentPortSize == 0) && data.portfolioSize) {
+        document.getElementById('paramPortfolioSize').value = data.portfolioSize;
+    }
+    
     log(`Loaded config for ${symbol} (${side})`);
   } catch(e) {
     log(`Error loading ${symbol}: ${e.message}`);
@@ -349,14 +379,33 @@ function updateCrossPrice() {
 }
 
 // --- LOGIC ---
-function interpolateTargetUnits(config, currentPxBtc) {
-  if (!config) return 0;
-  if (config.isNative) return 999999; // Represents infinite/residual
+
+function setPortSizeFromInputs() {
+  const unitsA = Number(document.getElementById('holdingsA').value || 0);
+  const unitsB = Number(document.getElementById('holdingsB').value || 0);
+  const priceA_USD = Number(document.getElementById('priceA').value || 0);
+  const priceB_USD = Number(document.getElementById('priceB').value || 0);
+  const priceBTC_USD = Number(document.getElementById('priceBTC').value || 1);
   
+  const valA = (unitsA * priceA_USD) / priceBTC_USD;
+  const valB = (unitsB * priceB_USD) / priceBTC_USD;
+  
+  const total = valA + valB;
+  document.getElementById('paramPortfolioSize').value = total.toFixed(6);
+  log(`Portfolio size set to ${total.toFixed(6)} BTC based on inputs.`);
+}
+
+function interpolateTargetUnits(config, currentPxBtc, actualPortfolioSize) {
+  if (!config) return 0;
+  if (config.isNative) return 999999; 
+  
+  // Use Explicit Input Portfolio Size
+  const portSize = actualPortfolioSize;
+
   // 1. Get Target Value in BTC
   const pmin = config.pmin, pmax = config.pmax;
-  const valMin = config.portfolioSize * (config.targetMinPct / 100);
-  const valMax = config.portfolioSize * (config.targetMaxPct / 100);
+  const valMin = portSize * (config.targetMinPct / 100);
+  const valMax = portSize * (config.targetMaxPct / 100);
   
   let targetValBtc = 0;
   
@@ -392,6 +441,13 @@ function calculateStrategy() {
   const priceB_USD = Number(document.getElementById('priceB').value || 0);
   const priceBTC_USD = Number(document.getElementById('priceBTC').value || 1);
   
+  // PORTFOLIO SIZE
+  const portSizeInput = Number(document.getElementById('paramPortfolioSize').value || 0);
+  if(portSizeInput <= 0) {
+      alert("Please enter a valid Total Portfolio Value (BTC), or click 'Set from Inputs'.");
+      return;
+  }
+  
   const lpMin = Number(document.getElementById('lpMin').value);
   const lpMax = Number(document.getElementById('lpMax').value);
   const stepPct = Number(document.getElementById('stepPct').value);
@@ -408,38 +464,28 @@ function calculateStrategy() {
   const priceA_BTC = priceA_USD / priceBTC_USD;
   
   // 1. Implied Prices at Boundaries
-  // Assumption: When planning Pair limits, we assume the Quote asset (B) stays roughly stable vs BTC
-  // So the variation comes from A moving.
-  
   const priceA_BTC_At_LPMax = lpMax * priceB_BTC; // Implied high val of A
   const priceA_BTC_At_LPMin = lpMin * priceB_BTC; // Implied low val of A (or B is high, effectively same for ratio)
 
   // 2. Target Checks
   // A: How much A do I want to hold when A is expensive (LP Max)?
-  const targetUnitsA_Max = interpolateTargetUnits(configA, priceA_BTC_At_LPMax);
+  const targetUnitsA_Max = interpolateTargetUnits(configA, priceA_BTC_At_LPMax, portSizeInput);
   
   // B: How much B do I want to hold when A is cheap (LP Min)?
-  // Note: When A is cheap, B is effectively expensive relative to A.
-  // But usually B's BTC target depends on B's BTC price. 
-  // We assume B's BTC price is constant (current).
-  const targetUnitsB_Min = interpolateTargetUnits(configB, priceB_BTC);
+  const targetUnitsB_Min = interpolateTargetUnits(configB, priceB_BTC, portSizeInput);
 
   // 3. Surplus Calculation (Liquidity Budget)
   // Ask Side (Sell A): Surplus = Current A - Target A (at Max)
-  // If we have 100 A, and at Max we only want 20 A, we can sell 80 A.
   let surplusA = unitsA - targetUnitsA_Max;
-  if (configA.isNative) surplusA = unitsA; // If A is BTC/Native, we assume we use all designated units
+  if (configA.isNative) surplusA = unitsA; 
 
   // Bid Side (Buy A with B): Surplus = Current B - Target B (at Min)
-  // Wait, if we buy A, we spend B.
-  // Do we want to hold Target B? Yes.
-  // So any B *above* Target B is available to spend.
   let surplusB = unitsB - targetUnitsB_Min;
   if (configB.isNative) surplusB = unitsB; 
 
   // Guard against negatives (Deficits)
-  const deficitA = surplusA < 0 ? Math.abs(surplusA) : 0;
-  const deficitB = surplusB < 0 ? Math.abs(surplusB) : 0;
+  const deficitA = surplusA < -1e-9 ? Math.abs(surplusA) : 0;
+  const deficitB = surplusB < -1e-9 ? Math.abs(surplusB) : 0;
   const liquidA = Math.max(0, surplusA);
   const liquidB = Math.max(0, surplusB);
 
@@ -524,7 +570,8 @@ function calculateStrategy() {
     unitsA, unitsB, 
     targetUnitsA_Max, targetUnitsB_Min,
     liquidA, liquidB, deficitA, deficitB,
-    bands: bands.sort((a,b) => a.pa - b.pa)
+    bands: bands.sort((a,b) => a.pa - b.pa),
+    portSize: portSizeInput
   });
 }
 
@@ -538,12 +585,12 @@ function renderResults(data) {
   let html = `
     <div class="summary-grid">
       <div class="stat-box" style="border-color:var(--accent);">
-        <div class="stat-label">${data.symA} Required</div>
+        <div class="stat-label">${data.symA} To Deploy</div>
         <div class="stat-val">${fmt(data.liquidA)}</div>
         <div class="stat-label" style="margin-top:4px;">${statusA}</div>
       </div>
       <div class="stat-box" style="border-color:var(--good);">
-        <div class="stat-label">${data.symB} Required</div>
+        <div class="stat-label">${data.symB} To Deploy</div>
         <div class="stat-val">${fmt(data.liquidB)}</div>
         <div class="stat-label" style="margin-top:4px;">${statusB}</div>
       </div>
@@ -562,8 +609,8 @@ function renderResults(data) {
   
   if(data.deficitA > 0 || data.deficitB > 0) {
     html += `<div style="padding:10px; background:rgba(255,93,93,0.1); border:1px solid var(--bad); border-radius:8px; margin-bottom:16px; font-size:12px; color:#ffadad;">
-      <b>Warning:</b> You have a deficit in one or more assets relative to your targets. 
-      You need to acquire more tokens before you can fully fund this LP strategy, or adjust your LP range/targets.
+      <b>Warning:</b> You have a deficit even after using ${fmt(data.portSize)} BTC portfolio size. 
+      This means your target allocations (e.g. 60% A + 60% B) exceed 100% of the portfolio, or the explicit portfolio size is smaller than required.
     </div>`;
   }
 
@@ -590,34 +637,39 @@ function renderResults(data) {
   const priceA = Number(document.getElementById('priceA').value);
   const priceB = Number(document.getElementById('priceB').value);
 
-  data.bands.forEach(b => {
-    if((b.amtA + b.amtB) <= 0) return;
+  // If both empty, show empty message
+  const hasRows = data.bands.some(b => (b.amtA + b.amtB) > 0);
+  
+  if(!hasRows) {
+     html += `<tr><td colspan="5" style="text-align:center; padding:20px; color:var(--muted);">No liquidity to deploy. (Deficits prevent LP action)</td></tr>`;
+  } else {
+      data.bands.forEach(b => {
+        if((b.amtA + b.amtB) <= 0) return;
+        
+        let action = '', col = '';
+        let valUSD = 0;
+        
+        if(b.type === 'Ask') {
+           action = `Sell ${data.symA}`;
+           col = 'var(--accent)';
+           valUSD = b.amtA * priceA;
+        } else {
+           action = `Buy ${data.symA}`;
+           col = 'var(--good)';
+           valUSD = b.amtB * priceB;
+        }
     
-    let action = '', col = '';
-    let valUSD = 0;
-    
-    if(b.type === 'Ask') {
-       action = `Sell ${data.symA}`;
-       col = 'var(--accent)';
-       valUSD = b.amtA * Math.sqrt(b.pa * b.pb) * priceB; // Val in B terms -> USD
-       // Or simpler: b.amtA * priceA
-       valUSD = b.amtA * priceA;
-    } else {
-       action = `Buy ${data.symA}`;
-       col = 'var(--good)';
-       valUSD = b.amtB * priceB;
-    }
-
-    html += `
-      <tr>
-        <td style="text-align:left; font-family:monospace;">${fmt(b.pa, 6)} - ${fmt(b.pb, 6)}</td>
-        <td style="color:${col}; font-weight:600;">${action}</td>
-        <td style="color:${b.amtA>0?'var(--ink)':'#333'}">${b.amtA > 0 ? fmt(b.amtA) : '-'}</td>
-        <td style="color:${b.amtB>0?'var(--ink)':'#333'}">${b.amtB > 0 ? fmt(b.amtB) : '-'}</td>
-        <td style="color:var(--muted);">$${fmt(valUSD, 2)}</td>
-      </tr>
-    `;
-  });
+        html += `
+          <tr>
+            <td style="text-align:left; font-family:monospace;">${fmt(b.pa, 6)} - ${fmt(b.pb, 6)}</td>
+            <td style="color:${col}; font-weight:600;">${action}</td>
+            <td style="color:${b.amtA>0?'var(--ink)':'#333'}">${b.amtA > 0 ? fmt(b.amtA) : '-'}</td>
+            <td style="color:${b.amtB>0?'var(--ink)':'#333'}">${b.amtB > 0 ? fmt(b.amtB) : '-'}</td>
+            <td style="color:var(--muted);">$${fmt(valUSD, 2)}</td>
+          </tr>
+        `;
+      });
+  }
 
   html += `</tbody></table></div></div>`;
   area.innerHTML = html;
