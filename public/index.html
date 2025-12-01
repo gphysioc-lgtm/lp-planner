@@ -654,7 +654,7 @@ function buildBands(pmin, pmax, p0, stepPct){
 }
 
 // --------------------------------------------------------------------------
-// Core Logic (Fixed for Uni V3 Asset Scaling AND Equal Units on Below side)
+// Core Logic (Fixed for Uni V3 Asset Scaling)
 // --------------------------------------------------------------------------
 function calculateStrategy(params, manualBands) {
   const {
@@ -695,13 +695,20 @@ function calculateStrategy(params, manualBands) {
   
   if (Nup > 0) {
       if (distMode === 'univ3') {
-          // 1. Convert Value to Units at Pmax
+          // --- FIX START ---
+          // 1. Convert the Value Requirement (BTC) to Asset Requirement (Units/SOL)
+          // We use effectivePmax because that represents the point where the asset is fully sold.
           const totalAssetUnitsNeeded = needMoreNegativeAtMax / effectivePmax;
+
           // 2. Calculate L based on Asset Units
+          // Formula: x = L * (1/sqrt(P_lower) - 1/sqrt(P_upper))
           const term = (1/Math.sqrt(p0)) - (1/Math.sqrt(effectivePmax));
           if(term > 0) globalL_Above = totalAssetUnitsNeeded / term;
-          // 3. Estimate initial capital (Value at P0)
+          
+          // 3. Estimate initial capital requirement (Value at P0)
+          // Value = Units * CurrentPrice
           aboveTotalScheduled = totalAssetUnitsNeeded * p0;
+          // --- FIX END ---
       } else {
           // Linear Exposure (Uniform)
           let sumSqrtP = 0;
@@ -713,23 +720,10 @@ function calculateStrategy(params, manualBands) {
   
   // Quote side (Below) logic
   let globalL_Below = 0;
-  let constUnitsBelow = 0; // For Linear (Buying Asset)
-
-  if(Ndown > 0) {
-      if (distMode === 'univ3') {
-        const term = Math.sqrt(p0) - Math.sqrt(effectivePmin);
-        if(term > 0) globalL_Below = needMinDelta / term;
-      } else {
-        // --- FIX FOR BELOW EQUAL UNITS ---
-        // We need to buy a total VALUE of 'needMinDelta' (BTC)
-        // But we want to buy constant UNITS of Asset (HYPE).
-        // Cost = Units * Price.
-        // TotalCost = Sum(Units * Price_i) = Units * Sum(Price_i).
-        // Units = needMinDelta / Sum(Price_i).
-        let sumPrices = 0;
-        for(const b of bands.down) sumPrices += Math.sqrt(b.pa * b.pb); // Geometric mean price
-        constUnitsBelow = sumPrices > 0 ? (needMinDelta / sumPrices) : 0;
-      }
+  if(Ndown > 0 && distMode === 'univ3') {
+      // For Quote side, needMinDelta IS the amount of quote (BTC), so no conversion needed
+      const term = Math.sqrt(p0) - Math.sqrt(effectivePmin);
+      if(term > 0) globalL_Below = needMinDelta / term;
   }
 
   // --- Liquidity Constraint Check ---
@@ -740,10 +734,13 @@ function calculateStrategy(params, manualBands) {
 
   let totalReq = aboveTotalScheduled; 
   
+  // Refine TotalReq for UniV3 if needed by summing bands (More accurate than P0 est)
   if(distMode === 'univ3' && Nup > 0){
       totalReq = 0;
       for(const b of bands.up){
+          // x_band = Asset Units in this band
           const x_band = globalL_Above * (1/Math.sqrt(b.pa) - 1/Math.sqrt(b.pb));
+          // Value = x_band * Price (Geometric Mean)
           totalReq += x_band * Math.sqrt(b.pa * b.pb);
       }
   }
@@ -763,6 +760,7 @@ function calculateStrategy(params, manualBands) {
   // Re-adjust scalars if constrained
   let ratio = (aboveTotalScheduled > 0) ? (totalReq / aboveTotalScheduled) : 0;
   
+  // For UniV3, we recalculated totalReq via bands, so use that for ratio
   if(distMode === 'univ3' && Nup > 0) {
       let rawSum = 0;
       for(const b of bands.up) {
@@ -773,6 +771,18 @@ function calculateStrategy(params, manualBands) {
       globalL_Above *= ratio;
   } else {
       constUnitsAbove *= ratio;
+  }
+
+  // Calculate Below Per-Band (Simpler for now: Equal Quote Value)
+  let sumRdown = 0;
+  for(const b of bands.down) sumRdown += Math.sqrt(b.pa / b.pb); 
+
+  let perUsdBelow = 0;
+  if(distMode !== 'univ3'){
+      for(const b of bands.down){ b.r_down = Math.sqrt(b.pa / b.pb); }
+      sumRdown = 0; 
+      for(const b of bands.down) sumRdown += b.r_down;
+      perUsdBelow = sumRdown>0 ? (needMinDelta / sumRdown) : 0;
   }
 
   const rows = [];
@@ -796,21 +806,22 @@ function calculateStrategy(params, manualBands) {
           // y = L * (sqrt(pb) - sqrt(pa))
           deployUSD = globalL_Below * (Math.sqrt(b.pb) - Math.sqrt(b.pa));
       } else {
-          // --- FIX APPLIED HERE ---
-          // Equal Units Logic: Deploy Quote = Units * Price
-          deployUSD = constUnitsBelow * Math.sqrt(b.pa * b.pb);
+          deployUSD = perUsdBelow;
       }
       
-      valueAtPa = deployUSD; // Approximation for accumulation
+      valueAtPa = deployUSD * rdown; // approx
       belowTotal += deployUSD;
       cumBelowValue += valueAtPa;
     } else {
        // ASK SIDE
        if (distMode === 'univ3') {
+          // Uni V3: x = L * (1/sqrt(pa) - 1/sqrt(pb))
           const x_band = globalL_Above * (1/Math.sqrt(b.pa) - 1/Math.sqrt(b.pb));
           altUnitsAbove = x_band;
+          // We calculate value in Denom (deployAltUsd) for the table display
           deployAltUsd = x_band * Math.sqrt(b.pa * b.pb);
        } else {
+          // Uniform (Equal Units)
           altUnitsAbove = constUnitsAbove;
           deployAltUsd = altUnitsAbove * Math.sqrt(b.pa * b.pb);
        }
