@@ -327,7 +327,7 @@ const COINGECKO_IDS = {
   USELESS: 'useless-2',
   MET: 'metis-token',
   GIGGLE: 'giggle',
-  '4': 'four-coin', 
+  '4': 'the-4th-pillar', // Attempting an ID, but Manual Entry is king.
   CAKE: 'pancakeswap-token',
   VIRTUALS: 'virtuals-protocol',
   AERO: 'aerodrome-finance',
@@ -359,6 +359,7 @@ function updateP0FromUsd() {
     const denomUsd = Number(document.getElementById('denomUsd').value || 0);
     const p0El = document.getElementById('p0');
     
+    // Only calculate if BOTH prices are present
     if(altUsd > 0 && denomUsd > 0) {
         const ratio = altUsd / denomUsd;
         p0El.value = ratio.toFixed(10); 
@@ -376,9 +377,9 @@ function updateUsdFromP0() {
     }
 }
 
-// NEW: REACTIVITY FUNCTION (Calculates the Blue Boxes)
-function updateCalculatedFields() {
-    // 1. Update Targets
+// NEW: MASTER CALCULATOR & AUTO-GENERATOR
+function updateCalculatedFields(shouldGenerate = false) {
+    // 1. Calculate Targets based on Portfolio Size
     const size = Number(document.getElementById('portfolioSize').value || 0);
     const minPct = Number(document.getElementById('targetMinPct').value || 0);
     const maxPct = Number(document.getElementById('targetMaxPct').value || 0);
@@ -386,13 +387,17 @@ function updateCalculatedFields() {
     document.getElementById('targetMin').value = (size * minPct / 100).toFixed(4);
     document.getElementById('targetMax').value = (size * maxPct / 100).toFixed(4);
 
-    // 2. Try to update P0 if valid
-    const altUsd = Number(document.getElementById('altUsd').value || 0);
-    const denomUsd = Number(document.getElementById('denomUsd').value || 0);
-    if(altUsd > 0 && denomUsd > 0) {
-        // Only update P0 if it is 0 or user is actively typing price
-        const curP0 = Number(document.getElementById('p0').value || 0);
-        if(curP0 === 0) updateP0FromUsd();
+    // 2. Trigger P0 Update if user is typing price
+    // Note: We check if active element is NOT P0 to avoid loop
+    if (document.activeElement.id !== 'p0') {
+        updateP0FromUsd();
+    }
+
+    // 3. AUTO-GENERATE if we have a valid P0
+    // This makes the table appear instantly when user types price
+    const curP0 = Number(document.getElementById('p0').value || 0);
+    if(curP0 > 0 && shouldGenerate) {
+        generate(); 
     }
 }
 
@@ -495,17 +500,19 @@ async function autoFetchPrices(assetSym, denomSym){
     if(mainIds) {
         mainData = await fetchPriceBatch(mainIds);
         if(mainData) {
+            // Only update Denom if found
             if(!isUsd && denomId && mainData[denomId]?.usd) {
                 document.getElementById('denomUsd').value = mainData[denomId].usd;
             }
-            if(assetId && mainData[assetId]?.usd) {
+            // SMART FALLBACK: Only update Alt Price if Found & > 0
+            // If failed (0 or undefined), LEAVE THE BOX ALONE or keep 0
+            if(assetId && mainData[assetId]?.usd > 0) {
                 document.getElementById('altUsd').value = mainData[assetId].usd;
             }
         }
     }
     
-    // FORCE UPDATE P0
-    updateP0FromUsd();
+    // Recalculate P0 immediately
     updateCalculatedFields();
 
     triggerAutoFetch();
@@ -581,10 +588,16 @@ async function loadAssetConfig(symbol){
       updateDenomLabels(data.denomAsset);
     }
     
+    // Try to fetch prices
     await autoFetchPrices(symbol, data.denomAsset || 'BTC');
-    updateCalculatedFields(); // Force Update
-    fetchLiveExposure();
-    generate(); // Auto-generate on load
+    
+    // Check if Alt Price is still 0 (fetch failed)
+    const currentAlt = Number(document.getElementById('altUsd').value);
+    if (currentAlt === 0) {
+        statusEl.innerHTML = `Loaded config. <span style="color:var(--accent)">Enter Price Manually.</span>`;
+    } else {
+        generate(); // Only auto-generate if price was found
+    }
 
   }catch(err){
     console.error(err);
@@ -709,7 +722,7 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
 function generate() {
   const container = document.getElementById('resultsContainer'); container.innerHTML = '';
   // Force update P0 before generation if needed
-  updateCalculatedFields();
+  updateCalculatedFields(false); // Don't loop
 
   const params = {
       pmin: Number(document.getElementById('pmin').value),
@@ -737,7 +750,8 @@ function generate() {
   const inputs = document.querySelectorAll('input');
 
   // Reactivity: update calcs on any input change
-  inputs.forEach(el => el.addEventListener('input', updateCalculatedFields));
+  // passing 'true' to allow auto-generation when typing
+  inputs.forEach(el => el.addEventListener('input', () => updateCalculatedFields(true)));
   
   loadAssetList();
   
