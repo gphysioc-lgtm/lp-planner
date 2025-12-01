@@ -325,6 +325,7 @@
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzqG0z2v6nZZZpuhGVYHR28R71jpKl4psheB3bsMQ1bj2Hc4-590l-7Xgj8LUG6cFryMw/exec';
 // --- END: GOOGLE APPS SCRIPT URL ---
 
+// UPDATED MAP with user assets from Sheet image
 const COINGECKO_IDS = {
   BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', BNB: 'binancecoin',
   ARB: 'arbitrum', OP: 'optimism', TIA: 'celestia', MATIC: 'matic-network',
@@ -332,7 +333,16 @@ const COINGECKO_IDS = {
   XRP: 'ripple', LDO: 'lido-dao', UNI: 'uniswap', ASTER: 'aster-2',
   JLP: 'jupiter-perpetuals-liquidity-provider-token',
   XPL: 'plasma-xpl',
-  HYPE: 'hyperliquid'
+  HYPE: 'hyperliquid',
+  // New Assets from Sheet:
+  USELESS: 'useless-2', // Fallback
+  MET: 'metis-token', // Assumption
+  GIGGLE: 'giggle', // Assumption/Fallback
+  '4': 'four-coin', // Just in case a coin named 4 exists, usually avoids error
+  CAKE: 'pancakeswap-token',
+  VIRTUALS: 'virtuals-protocol',
+  AERO: 'aerodrome-finance',
+  ORE: 'ore'
 };
 
 function fmt(x, d){
@@ -472,7 +482,7 @@ async function fetchPriceBatch(ids) {
         if(!res.ok) throw new Error(res.statusText);
         return await res.json();
     } catch(e) {
-        console.warn("Batch fetch failed:", e);
+        console.warn("Batch fetch failed or blocked:", e);
         return null;
     }
 }
@@ -489,11 +499,6 @@ async function autoFetchPrices(assetSym, denomSym){
   const jlpId   = COINGECKO_IDS['JLP'];
   const isUsd   = (denomSym || '').toUpperCase() === 'USD';
 
-  if(!denomId && !isUsd){
-    statusEl.textContent = "Waiting for denom asset...";
-    return false;
-  }
-
   try {
     if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
       statusEl.innerHTML = '<span style="color:var(--warn)">(Live prices require Vercel)</span>';
@@ -505,6 +510,7 @@ async function autoFetchPrices(assetSym, denomSym){
     }
 
     let mainIds = (!isUsd && denomId) ? denomId : '';
+    // Prevent failure on weird asset IDs like "4"
     if(assetId) mainIds += (mainIds ? ',' : '') + assetId;
     
     let mainData = {};
@@ -514,7 +520,7 @@ async function autoFetchPrices(assetSym, denomSym){
         mainData = await fetchPriceBatch(mainIds);
         if(mainData) {
             success = true;
-            if(!isUsd && mainData[denomId]?.usd) {
+            if(!isUsd && denomId && mainData[denomId]?.usd) {
                 document.getElementById('denomUsd').value = mainData[denomId].usd;
             }
             if(assetId && mainData[assetId]?.usd) {
@@ -540,7 +546,8 @@ async function autoFetchPrices(assetSym, denomSym){
         statusEl.style.color = 'var(--good)';
         return true;
     } else {
-        throw new Error("Main fetch failed");
+        statusEl.textContent = `Price Fetch: Partial success.`;
+        return false;
     }
 
   } catch(err) {
@@ -554,10 +561,7 @@ async function autoFetchPrices(assetSym, denomSym){
 async function loadAssetList(){
   const sel = document.getElementById('assetSelect');
   const statusEl = document.getElementById('sheetStatus');
-  if(!sel || !statusEl || APPS_SCRIPT_URL.includes('YOUR_APPS_SCRIPT')) {
-    statusEl.innerHTML = '<span style="color:var(--bad)">ERROR:</span> Check APPS_SCRIPT_URL.';
-    return;
-  }
+  if(!sel || !statusEl) return;
 
   statusEl.textContent = 'Loading asset list...';
   sel.innerHTML = '<option value="">– Select asset –</option>';
@@ -590,15 +594,17 @@ async function loadAssetConfig(symbol){
   if(!symbol) return;
   const statusEl = document.getElementById('sheetStatus');
   statusEl.textContent = `Loading config for ${symbol}...`;
+  document.getElementById('debugBox').textContent = `Fetching config for: "${symbol}"`;
 
   try{
     const url = `${APPS_SCRIPT_URL}?symbol=${encodeURIComponent(symbol)}`;
     const res = await fetch(url);
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    
     const data = await res.json();
-
     if(data.error) throw new Error(data.error);
 
+    // Apply Data
     if(typeof data.pmin === 'number') document.getElementById('pmin').value = data.pmin;
     if(typeof data.pmax === 'number') document.getElementById('pmax').value = data.pmax;
     if(typeof data.portfolioSize === 'number') document.getElementById('portfolioSize').value = data.portfolioSize;
@@ -615,20 +621,23 @@ async function loadAssetConfig(symbol){
       }
     }
     
+    // Attempt Price Fetch
     const success = await autoFetchPrices(symbol, denomSym);
     
+    // Fallback: If price fetch failed, but Sheet has P0, use it
     const currentAlt = Number(document.getElementById('altUsd').value || 0);
-    if((!success || currentAlt === 0) && typeof data.p0 === 'number') {
+    if(currentAlt === 0 && typeof data.p0 === 'number') {
        document.getElementById('p0').value = data.p0;
        updateUsdFromP0(); 
     }
     
     fetchLiveExposure();
     generate();
+    statusEl.textContent = "Config loaded successfully.";
 
   }catch(err){
     console.error('Error loading config', err);
-    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}.`;
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}.<br>Check Sheet Format (Format > Plain Text)`;
   }
 }
 
@@ -963,7 +972,7 @@ function renderTripleAggregateTable(container, strategies) {
                  targetVal = r.altUnitsAbove; unit = 'SOL';
                  const splitVal = targetVal / 3.0;
                  d1 = splitVal; e1 = splitVal;
-                 d2 = splitVal; e2 = splitVal;
+                 d2 = splitVal / btcPrice; e2 = splitVal;
                  const jlpAmt = r3.altUnitsAbove || 0;
                  d3 = jlpAmt;
                  if(solPriceUsd > 0) e3 = (jlpAmt * jlpUsd * 0.5) / solPriceUsd; 
