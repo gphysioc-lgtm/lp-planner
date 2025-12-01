@@ -316,8 +316,6 @@
 // --- YOUR CONFIG ---
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzATG0fdL2b6eMTw2CZcurw3BsNn1UzF0DsNRHdWpvoX8Ymr2UQGjuPjzSF2X_R9Sl8HA/exec';
 
-// --- FIXED COINGECKO IDS ---
-// We changed '4' to '4-2' which is the correct ID for the asset priced at ~0.03
 const COINGECKO_IDS = {
   BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', BNB: 'binancecoin',
   ARB: 'arbitrum', OP: 'optimism', TIA: 'celestia', MATIC: 'matic-network',
@@ -329,7 +327,7 @@ const COINGECKO_IDS = {
   USELESS: 'useless-2',
   MET: 'metis-token',
   GIGGLE: 'giggle',
-  '4': '4-2', // <--- FIXED: Points to correct "4" coin
+  '4': 'the-4th-pillar', // Attempting an ID, but Manual Entry is king.
   CAKE: 'pancakeswap-token',
   VIRTUALS: 'virtuals-protocol',
   AERO: 'aerodrome-finance',
@@ -390,11 +388,13 @@ function updateCalculatedFields(shouldGenerate = false) {
     document.getElementById('targetMax').value = (size * maxPct / 100).toFixed(4);
 
     // 2. Trigger P0 Update if user is typing price
+    // Note: We check if active element is NOT P0 to avoid loop
     if (document.activeElement.id !== 'p0') {
         updateP0FromUsd();
     }
 
     // 3. AUTO-GENERATE if we have a valid P0
+    // This makes the table appear instantly when user types price
     const curP0 = Number(document.getElementById('p0').value || 0);
     if(curP0 > 0 && shouldGenerate) {
         generate(); 
@@ -500,20 +500,21 @@ async function autoFetchPrices(assetSym, denomSym){
     if(mainIds) {
         mainData = await fetchPriceBatch(mainIds);
         if(mainData) {
+            // Only update Denom if found
             if(!isUsd && denomId && mainData[denomId]?.usd) {
                 document.getElementById('denomUsd').value = mainData[denomId].usd;
             }
-            // IMPORTANT FIX: Only update Alt Price if Found & Valid
+            // SMART FALLBACK: Only update Alt Price if Found & > 0
+            // If failed (0 or undefined), LEAVE THE BOX ALONE or keep 0
             if(assetId && mainData[assetId]?.usd > 0) {
                 document.getElementById('altUsd').value = mainData[assetId].usd;
-            } else {
-                // If fetch failed/found nothing, DO NOT overwrite with 0. 
-                // Keep the box clean or let user type.
             }
         }
     }
     
+    // Recalculate P0 immediately
     updateCalculatedFields();
+
     triggerAutoFetch();
     statusEl.textContent = `Prices Updated.`;
     statusEl.style.color = 'var(--good)';
@@ -567,6 +568,7 @@ async function loadAssetConfig(symbol){
   statusEl.textContent = `Loading ${symbol}...`;
 
   try{
+    // Append param to URL
     const fetchUrl = `${url}?symbol=${encodeURIComponent(symbol)}`;
     const res = await fetch(fetchUrl);
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -586,16 +588,15 @@ async function loadAssetConfig(symbol){
       updateDenomLabels(data.denomAsset);
     }
     
-    // Attempt Auto-Fetch
+    // Try to fetch prices
     await autoFetchPrices(symbol, data.denomAsset || 'BTC');
     
-    // Manual Override Logic:
-    // If the box is still 0 (CoinGecko failed), prompt user.
+    // Check if Alt Price is still 0 (fetch failed)
     const currentAlt = Number(document.getElementById('altUsd').value);
     if (currentAlt === 0) {
         statusEl.innerHTML = `Loaded config. <span style="color:var(--accent)">Enter Price Manually.</span>`;
     } else {
-        generate(); // Auto-generate if price is valid
+        generate(); // Only auto-generate if price was found
     }
 
   }catch(err){
@@ -720,8 +721,8 @@ function renderLPSection(container, title, strategyData, denomSymbol, denomUsd, 
 
 function generate() {
   const container = document.getElementById('resultsContainer'); container.innerHTML = '';
-  // Force update P0 before generation
-  updateCalculatedFields(false);
+  // Force update P0 before generation if needed
+  updateCalculatedFields(false); // Don't loop
 
   const params = {
       pmin: Number(document.getElementById('pmin').value),
