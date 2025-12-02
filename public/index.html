@@ -8,7 +8,7 @@
   :root {
     --bg:#0b0f14; --card:#101620; --ink:#e8eef6; --muted:#9fb1c7;
     --accent:#5bb0ff; --good:#17c964; --bad:#ff5d5d; --warn:#ffc857;
-    --highlight:#334255; --border:#17202d;
+    --purple:#c084fc; --highlight:#334255; --border:#17202d;
   }
   * { box-sizing:border-box; }
   body {
@@ -63,12 +63,6 @@
   button.secondary { background:#1a2a3d; color:#a7c4e6; }
   button.secondary:hover { background:#23364d; }
   
-  .mini-btn {
-    font-size:10px; padding:2px 6px; border-radius:4px; background:#233142; color:#a7c4e6;
-    border:1px solid #344a63; cursor:pointer; display:inline-block; margin-left:6px;
-  }
-  .mini-btn:hover { background:#2d4056; }
-
   /* TABLE */
   .table-wrap { overflow:auto; max-height:65vh; border:1px solid var(--border); border-radius:8px; }
   table { width:100%; border-collapse:separate; border-spacing:0; min-width:800px; }
@@ -85,6 +79,7 @@
   .text-good { color:var(--good); }
   .text-bad { color:var(--bad); }
   .text-accent { color:var(--accent); }
+  .text-purple { color:var(--purple); }
   
   .asset-box {
     background:#080c11; border:1px solid #1a2433; padding:8px; border-radius:6px; margin-bottom:8px;
@@ -95,6 +90,12 @@
   .stat-box { background:#0e1622; padding:10px; border-radius:8px; border:1px solid #1a2a3d; }
   .stat-label { font-size:10px; color:var(--muted); text-transform:uppercase; margin-bottom:4px; }
   .stat-val { font-size:14px; font-weight:600; color:var(--ink); }
+  
+  /* SKEW BAR */
+  .skew-container {
+    height: 8px; background: #1a2433; border-radius: 4px; overflow: hidden; display: flex; margin-top: 8px;
+  }
+  .skew-fill { height: 100%; transition: width 0.3s ease; }
 </style>
 </head>
 <body>
@@ -181,7 +182,7 @@
           <h2>Strategy Settings</h2>
         </div>
         
-        <!-- NEW: EXPLICIT PORTFOLIO SIZE -->
+        <!-- EXPLICIT PORTFOLIO SIZE -->
         <div style="background:#0e1622; padding:8px; border-radius:6px; border:1px solid #233142; margin-bottom:12px;">
            <label style="color:var(--ink); font-weight:600; margin-bottom:6px;">
              Total Portfolio Value (BTC)
@@ -191,9 +192,6 @@
              <button class="secondary" style="flex:0 0 auto; width:auto; padding:0 8px;" onclick="setPortSizeFromInputs()" title="Calculate size based on Current Units A + B">
                Set from Inputs
              </button>
-           </div>
-           <div style="font-size:10px; color:var(--muted); margin-top:4px;">
-             This value determines your Target allocation amounts.
            </div>
         </div>
 
@@ -220,6 +218,24 @@
         <div class="btns">
           <button class="primary" id="btnGen">Generate Schedule</button>
           <button class="secondary" onclick="clearResults()">Clear</button>
+        </div>
+      </div>
+
+      <!-- NEW: ACTIVE LP / SKEW MODE -->
+      <div class="card" style="border-color:var(--purple);">
+        <div class="card-header" style="border-bottom-color:var(--purple);">
+          <h2 style="color:var(--purple);">Active LP / Inventory Skew</h2>
+        </div>
+        
+        <label style="color:var(--ink);">Active Capital Budget (BTC Value)</label>
+        <div style="display:flex; gap:6px;">
+          <input type="number" id="activeBudget" placeholder="e.g. 0.5" step="0.1" value="0.5">
+          <button class="secondary" style="background:#2d1b3d; color:var(--purple); border-color:#53306e; flex:0 0 auto;" onclick="runSkewStrategy()">
+            Calc Skew
+          </button>
+        </div>
+        <div style="font-size:10px; color:var(--muted); margin-top:4px;">
+          Calculates a micro-position skewed to fix portfolio imbalances.
         </div>
       </div>
       
@@ -294,7 +310,6 @@ async function fetchAssetList() {
 
 async function loadConfig(side, symbol) {
   if(!symbol || symbol === 'BTC') {
-    // If BTC or empty, use default dummy config
     ASSET_DATA[side].config = { pmin:0, pmax:999999999, targetMinPct:100, targetMaxPct:100, portfolioSize:0, isNative:true };
     document.getElementById(`targetRange${side}`).textContent = symbol === 'BTC' ? '(Numeraire)' : '';
     return;
@@ -307,11 +322,9 @@ async function loadConfig(side, symbol) {
     
     ASSET_DATA[side].config = data;
     
-    // Display summary
     const rangeTxt = `Target: ${data.targetMinPct}% - ${data.targetMaxPct}%`;
     document.getElementById(`targetRange${side}`).textContent = rangeTxt;
     
-    // PRE-FILL Global Portfolio Size if not already set (using first asset loaded)
     const currentPortSize = document.getElementById('paramPortfolioSize').value;
     if((!currentPortSize || currentPortSize == 0) && data.portfolioSize) {
         document.getElementById('paramPortfolioSize').value = data.portfolioSize;
@@ -379,13 +392,14 @@ function updateCrossPrice() {
 }
 
 // --- LOGIC ---
-
 function setPortSizeFromInputs() {
   const unitsA = Number(document.getElementById('holdingsA').value || 0);
   const unitsB = Number(document.getElementById('holdingsB').value || 0);
   const priceA_USD = Number(document.getElementById('priceA').value || 0);
   const priceB_USD = Number(document.getElementById('priceB').value || 0);
   const priceBTC_USD = Number(document.getElementById('priceBTC').value || 1);
+  
+  if(priceBTC_USD <= 0) return;
   
   const valA = (unitsA * priceA_USD) / priceBTC_USD;
   const valB = (unitsB * priceB_USD) / priceBTC_USD;
@@ -398,268 +412,220 @@ function setPortSizeFromInputs() {
 function interpolateTargetUnits(config, currentPxBtc, actualPortfolioSize) {
   if (!config) return 0;
   if (config.isNative) return 999999; 
-  
-  // Use Explicit Input Portfolio Size
   const portSize = actualPortfolioSize;
-
-  // 1. Get Target Value in BTC
   const pmin = config.pmin, pmax = config.pmax;
   const valMin = portSize * (config.targetMinPct / 100);
   const valMax = portSize * (config.targetMaxPct / 100);
-  
   let targetValBtc = 0;
-  
   if (currentPxBtc <= pmin) targetValBtc = valMin;
   else if (currentPxBtc >= pmax) targetValBtc = valMax;
   else {
-    // Linear interp of VALUE
     const pct = (currentPxBtc - pmin) / (pmax - pmin);
     targetValBtc = valMin + pct * (valMax - valMin);
   }
-  
-  // 2. Convert Value to Units
-  // Units = Value(BTC) / Price(Asset/BTC)
   if (currentPxBtc <= 0) return 0;
   return targetValBtc / currentPxBtc;
 }
 
+// --- STANDARD STRATEGY ---
 function calculateStrategy() {
+  // ... (Same base logic as before, just fetching values)
+  runCalculation(false);
+}
+
+// --- SKEW STRATEGY ---
+function runSkewStrategy() {
+  runCalculation(true);
+}
+
+function runCalculation(isSkewMode) {
   const symA = document.getElementById('assetA').value;
   const symB = document.getElementById('assetB').value;
   const configA = ASSET_DATA.A.config;
   const configB = ASSET_DATA.B.config;
   
-  if(!symA || !symB || !configA || !configB) {
-    alert("Please load assets and configs first.");
-    return;
-  }
+  if(!symA || !symB || !configA || !configB) { alert("Please load assets first."); return; }
 
-  // Inputs
   const unitsA = Number(document.getElementById('holdingsA').value || 0);
   const unitsB = Number(document.getElementById('holdingsB').value || 0);
   const priceA_USD = Number(document.getElementById('priceA').value || 0);
   const priceB_USD = Number(document.getElementById('priceB').value || 0);
   const priceBTC_USD = Number(document.getElementById('priceBTC').value || 1);
-  
-  // PORTFOLIO SIZE
   const portSizeInput = Number(document.getElementById('paramPortfolioSize').value || 0);
-  if(portSizeInput <= 0) {
-      alert("Please enter a valid Total Portfolio Value (BTC), or click 'Set from Inputs'.");
-      return;
-  }
+  
+  if(portSizeInput <= 0) { alert("Please set Portfolio Size."); return; }
   
   const lpMin = Number(document.getElementById('lpMin').value);
   const lpMax = Number(document.getElementById('lpMax').value);
   const stepPct = Number(document.getElementById('stepPct').value);
   const distMode = document.getElementById('distMode').value;
+  const activeBudget = Number(document.getElementById('activeBudget').value || 0);
 
-  if(lpMin <= 0 || lpMax <= lpMin || stepPct <= 0) {
-    alert("Invalid Strategy Parameters (Range or Step)");
-    return;
-  }
+  if(lpMin <= 0 || lpMax <= lpMin) { alert("Check LP Range."); return; }
 
-  // Current State
   const pairPrice = priceA_USD / priceB_USD;
   const priceB_BTC = priceB_USD / priceBTC_USD;
   const priceA_BTC = priceA_USD / priceBTC_USD;
-  
-  // 1. Implied Prices at Boundaries
-  const priceA_BTC_At_LPMax = lpMax * priceB_BTC; // Implied high val of A
-  const priceA_BTC_At_LPMin = lpMin * priceB_BTC; // Implied low val of A (or B is high, effectively same for ratio)
 
-  // 2. Target Checks
-  // A: How much A do I want to hold when A is expensive (LP Max)?
+  // Implied Target Logic
+  const priceA_BTC_At_LPMax = lpMax * priceB_BTC; 
   const targetUnitsA_Max = interpolateTargetUnits(configA, priceA_BTC_At_LPMax, portSizeInput);
-  
-  // B: How much B do I want to hold when A is cheap (LP Min)?
   const targetUnitsB_Min = interpolateTargetUnits(configB, priceB_BTC, portSizeInput);
 
-  // 3. Surplus Calculation (Liquidity Budget)
-  // Ask Side (Sell A): Surplus = Current A - Target A (at Max)
   let surplusA = unitsA - targetUnitsA_Max;
-  if (configA.isNative) surplusA = unitsA; 
-
-  // Bid Side (Buy A with B): Surplus = Current B - Target B (at Min)
   let surplusB = unitsB - targetUnitsB_Min;
-  if (configB.isNative) surplusB = unitsB; 
+  if(configA.isNative) surplusA = unitsA;
+  if(configB.isNative) surplusB = unitsB;
 
-  // Guard against negatives (Deficits)
-  const deficitA = surplusA < -1e-9 ? Math.abs(surplusA) : 0;
-  const deficitB = surplusB < -1e-9 ? Math.abs(surplusB) : 0;
-  const liquidA = Math.max(0, surplusA);
-  const liquidB = Math.max(0, surplusB);
+  let liquidA = 0, liquidB = 0;
+  let deficitA = 0, deficitB = 0;
+  let skewMessage = "";
+  let skewA = 0.5, skewB = 0.5;
 
-  // 4. Build Bands
+  if (isSkewMode) {
+      // --- SKEW LOGIC ---
+      // 1. Calculate Inventory Balance
+      // Positive = Excess, Negative = Shortage
+      const gapA_BTC = surplusA * priceA_BTC; 
+      const gapB_BTC = surplusB * priceB_BTC;
+      
+      // 2. Define Weights
+      // If Gap A is negative (Short A), we need Bids (liquidB).
+      // If Gap A is positive (Long A), we need Asks (liquidA).
+      // We calculate a weight based on the RELATIVE gap vs the budget.
+      
+      const rawScore = (gapA_BTC - gapB_BTC) / activeBudget; 
+      // RawScore > 0 means we have too much A relative to B. Need to Sell A.
+      // RawScore < 0 means we have too much B relative to A. Need to Buy A (Sell B).
+      
+      // Clamp Score between -1 (Full Bid) and 1 (Full Ask)
+      // We use a sigmoid-like clamp or simple linear cap
+      let score = Math.max(-0.9, Math.min(0.9, rawScore));
+      
+      // 3. Allocate Budget
+      // Skew Factor: 0 = 50/50. 1 = 100% A. -1 = 100% B.
+      // liquidA (Ask) allocation %
+      const pctAsk = (score + 1) / 2; // Maps -1..1 to 0..1
+      const pctBid = 1 - pctAsk;
+      
+      const budgetA_BTC = activeBudget * pctAsk;
+      const budgetB_BTC = activeBudget * pctBid;
+      
+      liquidA = budgetA_BTC / priceA_BTC;
+      liquidB = budgetB_BTC / priceB_BTC;
+      
+      skewA = pctAsk;
+      skewB = pctBid;
+      skewMessage = `Inventory Skew: ${pctAsk > 0.6 ? 'Heavy Sell ' + symA : (pctBid > 0.6 ? 'Heavy Buy ' + symA : 'Balanced')}`;
+
+  } else {
+      // Standard Logic (Surplus Only)
+      deficitA = surplusA < -1e-9 ? Math.abs(surplusA) : 0;
+      deficitB = surplusB < -1e-9 ? Math.abs(surplusB) : 0;
+      liquidA = Math.max(0, surplusA);
+      liquidB = Math.max(0, surplusB);
+  }
+
+  // --- BUILD BANDS ---
   const bands = [];
   let p = pairPrice;
-  
-  // Down (Bid Side - Consumes B)
   while(p > lpMin) {
-    const pb = p;
-    let pa = pb * (1 - stepPct/100);
-    if(pa < lpMin) pa = lpMin;
-    bands.push({ pa, pb, type: 'Bid', w: 0 });
-    if(pa <= lpMin) break;
-    p = pa;
+    const pb = p; let pa = pb * (1 - stepPct/100); if(pa < lpMin) pa = lpMin;
+    bands.push({ pa, pb, type: 'Bid', w: 0 }); if(pa <= lpMin) break; p = pa;
   }
-  
-  // Up (Ask Side - Consumes A)
   p = pairPrice;
   while(p < lpMax) {
-    const pa = p;
-    let pb = pa * (1 + stepPct/100);
-    if(pb > lpMax) pb = lpMax;
-    bands.push({ pa, pb, type: 'Ask', w: 0 });
-    if(pb >= lpMax) break;
-    p = pb;
+    const pa = p; let pb = pa * (1 + stepPct/100); if(pb > lpMax) pb = lpMax;
+    bands.push({ pa, pb, type: 'Ask', w: 0 }); if(pb >= lpMax) break; p = pb;
   }
   
-  // 5. Distribute Liquidity
-  // Helper for UniV3 L
+  // --- DISTRIBUTE ---
   const getL = (amt, pa, pb, isAsset) => {
-    // isAsset=true (A), isAsset=false (B/Quote)
     const sa = Math.sqrt(pa), sb = Math.sqrt(pb);
-    if(isAsset) {
-      // Amount = A. x = L * (1/sa - 1/sb)
-      return amt / (1/sa - 1/sb);
-    } else {
-      // Amount = B. y = L * (sb - sa)
-      return amt / (sb - sa);
-    }
+    return isAsset ? amt / (1/sa - 1/sb) : amt / (sb - sa);
   };
 
-  // Bid Side (B) Distribution
   const bidBands = bands.filter(b => b.type === 'Bid');
   if(bidBands.length > 0) {
     if(distMode === 'univ3') {
-       // Global L over range [lpMin, pairPrice] using liquidB
        const L = getL(liquidB, lpMin, pairPrice, false);
-       bidBands.forEach(b => {
-         // Bin Liquidity = Global L for V3 logic (simplified for allocation)
-         // Actually, let's just calc amounts per bin based on L
-         const y = L * (Math.sqrt(b.pb) - Math.sqrt(b.pa));
-         b.amtB = y;
-         b.amtA = 0;
-       });
+       bidBands.forEach(b => { b.amtB = L * (Math.sqrt(b.pb) - Math.sqrt(b.pa)); b.amtA = 0; });
     } else {
-       // Uniform
        const amtPerBand = liquidB / bidBands.length;
        bidBands.forEach(b => { b.amtB = amtPerBand; b.amtA = 0; });
     }
   }
 
-  // Ask Side (A) Distribution
   const askBands = bands.filter(b => b.type === 'Ask');
   if(askBands.length > 0) {
     if(distMode === 'univ3') {
        const L = getL(liquidA, pairPrice, lpMax, true);
-       askBands.forEach(b => {
-         const x = L * (1/Math.sqrt(b.pa) - 1/Math.sqrt(b.pb));
-         b.amtA = x;
-         b.amtB = 0;
-       });
+       askBands.forEach(b => { b.amtA = L * (1/Math.sqrt(b.pa) - 1/Math.sqrt(b.pb)); b.amtB = 0; });
     } else {
        const amtPerBand = liquidA / askBands.length;
        askBands.forEach(b => { b.amtA = amtPerBand; b.amtB = 0; });
     }
   }
 
-  // 6. Render
+  // RENDER
   renderResults({
-    symA, symB, lpMin, lpMax, 
-    unitsA, unitsB, 
+    symA, symB, lpMin, lpMax, unitsA, unitsB, 
     targetUnitsA_Max, targetUnitsB_Min,
     liquidA, liquidB, deficitA, deficitB,
     bands: bands.sort((a,b) => a.pa - b.pa),
-    portSize: portSizeInput
+    isSkewMode, skewMessage, skewA, skewB, activeBudget
   });
 }
 
 function renderResults(data) {
   const area = document.getElementById('resultsArea');
-  
-  // Status Color Logic
-  const statusA = data.deficitA > 0 ? `<span class="text-bad">Deficit: ${fmt(data.deficitA)}</span>` : `<span class="text-good">Surplus: ${fmt(data.liquidA)}</span>`;
-  const statusB = data.deficitB > 0 ? `<span class="text-bad">Deficit: ${fmt(data.deficitB)}</span>` : `<span class="text-good">Surplus: ${fmt(data.liquidB)}</span>`;
-
-  let html = `
-    <div class="summary-grid">
-      <div class="stat-box" style="border-color:var(--accent);">
-        <div class="stat-label">${data.symA} To Deploy</div>
-        <div class="stat-val">${fmt(data.liquidA)}</div>
-        <div class="stat-label" style="margin-top:4px;">${statusA}</div>
-      </div>
-      <div class="stat-box" style="border-color:var(--good);">
-        <div class="stat-label">${data.symB} To Deploy</div>
-        <div class="stat-val">${fmt(data.liquidB)}</div>
-        <div class="stat-label" style="margin-top:4px;">${statusB}</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-label">Target ${data.symA} @ Pmax</div>
-        <div class="stat-val">${fmt(data.targetUnitsA_Max)}</div>
-        <div class="stat-label">Implied by Planning</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-label">Target ${data.symB} @ Pmin</div>
-        <div class="stat-val">${fmt(data.targetUnitsB_Min)}</div>
-        <div class="stat-label">Implied by Planning</div>
-      </div>
-    </div>
-  `;
-  
-  if(data.deficitA > 0 || data.deficitB > 0) {
-    html += `<div style="padding:10px; background:rgba(255,93,93,0.1); border:1px solid var(--bad); border-radius:8px; margin-bottom:16px; font-size:12px; color:#ffadad;">
-      <b>Warning:</b> You have a deficit even after using ${fmt(data.portSize)} BTC portfolio size. 
-      This means your target allocations (e.g. 60% A + 60% B) exceed 100% of the portfolio, or the explicit portfolio size is smaller than required.
-    </div>`;
-  }
-
-  html += `
-    <div class="card">
-      <div class="card-header">
-        <h2>Rebalancing Schedule (${data.symA}/${data.symB})</h2>
-        <button class="secondary" style="width:auto; padding:4px 8px; font-size:11px;" onclick="copyTable()">Copy</button>
-      </div>
-      <div class="table-wrap">
-        <table id="scheduleTable">
-          <thead>
-            <tr>
-              <th style="text-align:left;">Range (${data.symA}/${data.symB})</th>
-              <th>Action</th>
-              <th>Deploy ${data.symA}</th>
-              <th>Deploy ${data.symB}</th>
-              <th>Value (USD Approx)</th>
-            </tr>
-          </thead>
-          <tbody>
-  `;
-  
   const priceA = Number(document.getElementById('priceA').value);
   const priceB = Number(document.getElementById('priceB').value);
-
-  // If both empty, show empty message
-  const hasRows = data.bands.some(b => (b.amtA + b.amtB) > 0);
   
+  let headerHtml = "";
+  if(data.isSkewMode) {
+     const pctA = (data.skewA * 100).toFixed(0);
+     const pctB = (data.skewB * 100).toFixed(0);
+     headerHtml = `
+       <div style="background:#2d1b3d; border:1px solid var(--purple); padding:12px; border-radius:8px; margin-bottom:16px;">
+         <div style="display:flex; justify-content:space-between; color:var(--purple); font-weight:700;">
+            <span>ACTIVE SKEW MODE</span>
+            <span>Budget: ${data.activeBudget} BTC</span>
+         </div>
+         <div style="font-size:12px; color:#e0c3fc; margin-top:4px;">${data.skewMessage}</div>
+         
+         <div class="skew-container">
+            <div class="skew-fill" style="width:${pctB}%; background:var(--good);"></div>
+            <div class="skew-fill" style="width:${pctA}%; background:var(--accent);"></div>
+         </div>
+         <div style="display:flex; justify-content:space-between; font-size:10px; margin-top:4px;">
+            <span style="color:var(--good);">${pctB}% ${data.symB} (Bids)</span>
+            <span style="color:var(--accent);">${pctA}% ${data.symA} (Asks)</span>
+         </div>
+       </div>
+     `;
+  } else {
+      if(data.deficitA > 0 || data.deficitB > 0) {
+        headerHtml = `<div style="padding:10px; background:rgba(255,93,93,0.1); border:1px solid var(--bad); border-radius:8px; margin-bottom:16px; font-size:12px; color:#ffadad;">
+          <b>Standard Mode Warning:</b> Deficit Detected. Switch to "Active Skew" to trade through this.
+        </div>`;
+      }
+  }
+
+  let tableHtml = "";
+  const hasRows = data.bands.some(b => (b.amtA + b.amtB) > 0);
   if(!hasRows) {
-     html += `<tr><td colspan="5" style="text-align:center; padding:20px; color:var(--muted);">No liquidity to deploy. (Deficits prevent LP action)</td></tr>`;
+     tableHtml = `<tr><td colspan="5" style="text-align:center; padding:20px; color:var(--muted);">No liquidity to deploy.</td></tr>`;
   } else {
       data.bands.forEach(b => {
         if((b.amtA + b.amtB) <= 0) return;
-        
-        let action = '', col = '';
-        let valUSD = 0;
-        
+        let action = '', col = '', valUSD = 0;
         if(b.type === 'Ask') {
-           action = `Sell ${data.symA}`;
-           col = 'var(--accent)';
-           valUSD = b.amtA * priceA;
+           action = `Sell ${data.symA}`; col = 'var(--accent)'; valUSD = b.amtA * priceA;
         } else {
-           action = `Buy ${data.symA}`;
-           col = 'var(--good)';
-           valUSD = b.amtB * priceB;
+           action = `Buy ${data.symA}`; col = 'var(--good)'; valUSD = b.amtB * priceB;
         }
-    
-        html += `
+        tableHtml += `
           <tr>
             <td style="text-align:left; font-family:monospace;">${fmt(b.pa, 6)} - ${fmt(b.pb, 6)}</td>
             <td style="color:${col}; font-weight:600;">${action}</td>
@@ -671,39 +637,42 @@ function renderResults(data) {
       });
   }
 
-  html += `</tbody></table></div></div>`;
-  area.innerHTML = html;
+  area.innerHTML = `
+    ${headerHtml}
+    <div class="card">
+      <div class="card-header">
+        <h2>Schedule (${data.symA}/${data.symB})</h2>
+        <button class="secondary" style="width:auto; padding:4px 8px; font-size:11px;" onclick="copyTable()">Copy</button>
+      </div>
+      <div class="table-wrap">
+        <table id="scheduleTable">
+          <thead>
+            <tr><th style="text-align:left;">Range</th><th>Action</th><th>${data.symA}</th><th>${data.symB}</th><th>USD</th></tr>
+          </thead>
+          <tbody>${tableHtml}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
-function clearResults() {
-  document.getElementById('resultsArea').innerHTML = '<div style="padding:40px; text-align:center; color:var(--muted);">Results cleared.</div>';
-}
-
+function clearResults() { document.getElementById('resultsArea').innerHTML = ''; }
 function copyTable() {
   const el = document.getElementById('scheduleTable');
   if(!el) return;
-  const range = document.createRange();
-  range.selectNode(el);
-  window.getSelection().removeAllRanges();
-  window.getSelection().addRange(range);
-  document.execCommand('copy');
-  window.getSelection().removeAllRanges();
-  alert("Table copied to clipboard");
+  const range = document.createRange(); range.selectNode(el);
+  window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  document.execCommand('copy'); window.getSelection().removeAllRanges();
+  alert("Copied");
 }
 
-// --- EVENTS ---
 document.addEventListener('DOMContentLoaded', () => {
   fetchAssetList();
-  
   document.getElementById('assetA').addEventListener('change', (e) => loadConfig('A', e.target.value));
   document.getElementById('assetB').addEventListener('change', (e) => loadConfig('B', e.target.value));
-  
-  const pInputs = ['priceA','priceB'];
-  pInputs.forEach(id => document.getElementById(id).addEventListener('input', updateCrossPrice));
-  
+  ['priceA','priceB'].forEach(id => document.getElementById(id).addEventListener('input', updateCrossPrice));
   document.getElementById('btnGen').addEventListener('click', calculateStrategy);
 });
-
 </script>
 </body>
 </html>
