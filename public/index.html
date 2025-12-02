@@ -426,9 +426,11 @@ async function fetchLiveExposure() {
     else if (typeof rawData === 'object' && rawData !== null) {
         const keys = Object.keys(rawData);
         const looksLikeMap = keys.length > 0 && keys.every(k => k === k.toUpperCase() && k.length < 10);
-        if (looksLikeMap) { dataList = keys.map(k => ({ symbol: k, ...rawData[k] })); } 
-        else if (Array.isArray(rawData.table_data)) dataList = rawData.table_data;
-        else if (Array.isArray(rawData.data)) dataList = rawData.data;
+        if (looksLikeMap) {
+            dataList = keys.map(k => ({ symbol: k, ...rawData[k] }));
+        } else if (Array.isArray(rawData.table_data)) {
+            dataList = rawData.table_data;
+        } else if (Array.isArray(rawData.data)) dataList = rawData.data;
         else if (Array.isArray(rawData.positions)) dataList = rawData.positions;
         else if (Array.isArray(rawData.result)) dataList = rawData.result;
         else { dataList = [rawData]; }
