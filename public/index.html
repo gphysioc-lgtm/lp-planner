@@ -131,7 +131,7 @@
   /* CHART STYLES */
   .chart-container {
     position: relative; 
-    height: 400px; 
+    height: 350px; 
     width: 100%;
     margin-bottom: 16px;
   }
@@ -984,11 +984,8 @@ function getUnitsHeldAt(px, pmin, pmax, portSize, tMinPct, tMaxPct, mode) {
 
     if (mode === 'uniform') {
         // --- FIX START: Linear Exposure Interpolation ---
-        // 1. Calculate progress from 0.0 to 1.0
         const progress = (p - pmin) / (pmax - pmin);
-        // 2. Interpolate the Target Value (BTC/Denom) linearly
         const currentTargetVal = valMin + (valMax - valMin) * progress;
-        // 3. Return Units required to hit that value at current price
         return currentTargetVal / p;
         // --- FIX END ---
     } else if (mode === 'univ3') {
@@ -1181,20 +1178,17 @@ function generate() {
   strategies.forEach(s => renderLPSection(container, s.title, s.data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id));
 }
 
-// --- CHART RENDERING ---
+// --- CHART RENDERING (PROFILE) ---
 function renderExposureChart(rows, denomSym, assetSym, p0) {
     const canvasId = 'exposureChart';
     const oldCanvas = document.getElementById(canvasId);
+    if(!oldCanvas) return;
     
     // Data extraction
     const labels = rows.map(r => r.pricePair);
     const dataExp = rows.map(r => r.expPct);
     const dataUsdPrice = rows.map(r => r.priceUsd);
     
-    // Find limits for annotations
-    const pMin = Math.min(...labels);
-    const pMax = Math.max(...labels);
-
     new Chart(oldCanvas, {
         type: 'line',
         data: {
@@ -1222,12 +1216,6 @@ function renderExposureChart(rows, denomSym, assetSym, p0) {
                     pointRadius: 0,
                     pointHoverRadius: 0,
                     tension: 0.1
-                },
-                {
-                    // Invisible point for Current Price to force X axis range if needed, or better use annotation
-                    label: 'Current Price',
-                    data: [{x: p0, y: 0}], // Mock, will use annotation logic
-                    hidden: true
                 }
             ]
         },
@@ -1244,27 +1232,9 @@ function renderExposureChart(rows, denomSym, assetSym, p0) {
                     titleColor: '#fff',
                     bodyColor: '#ccc',
                     borderColor: '#333',
-                    borderWidth: 1,
-                    callbacks: {
-                        label: function(context) {
-                            let label = context.dataset.label || '';
-                            if (label) {
-                                label += ': ';
-                            }
-                            if (context.parsed.y !== null) {
-                                if(context.dataset.yAxisID === 'y') {
-                                    label += context.parsed.y.toFixed(2) + '%';
-                                } else {
-                                    label += '$' + context.parsed.y.toFixed(2);
-                                }
-                            }
-                            return label;
-                        }
-                    }
+                    borderWidth: 1
                 },
-                legend: {
-                    labels: { color: '#9fb1c7' }
-                }
+                legend: { labels: { color: '#9fb1c7' } }
             },
             scales: {
                 x: {
@@ -1291,18 +1261,15 @@ function renderExposureChart(rows, denomSym, assetSym, p0) {
                     ticks: { color: '#17c964', callback: function(value) { return '$' + value; } }
                 }
             },
-            // Draw Vertical Line for Current Price manually
             animation: {
                 onComplete: function(animation) {
                     const ctx = animation.chart.ctx;
                     const chart = animation.chart;
                     const xAxis = chart.scales.x;
                     const yAxis = chart.scales.y;
-                    
                     const xVal = p0;
                     if(xVal >= xAxis.min && xVal <= xAxis.max) {
                         const xPix = xAxis.getPixelForValue(xVal);
-                        
                         ctx.save();
                         ctx.beginPath();
                         ctx.moveTo(xPix, yAxis.top);
@@ -1312,7 +1279,6 @@ function renderExposureChart(rows, denomSym, assetSym, p0) {
                         ctx.setLineDash([2, 4]);
                         ctx.stroke();
                         ctx.restore();
-                        
                         ctx.fillStyle = '#fff';
                         ctx.fillText('P₀', xPix + 4, yAxis.top + 10);
                     }
@@ -1322,7 +1288,117 @@ function renderExposureChart(rows, denomSym, assetSym, p0) {
     });
 }
 
-// --- NEW EXPOSURE SCHEDULE LOGIC ---
+// --- HISTORICAL CHART LOGIC ---
+async function fetchAndRenderHistory(pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode, assetSym, denomSym, denomUsd) {
+    const container = document.getElementById('historyChartContainer');
+    if(!container) return;
+    
+    container.innerHTML = '<div style="color:var(--muted); padding:20px; text-align:center;">Fetching 30-day history...</div>';
+    
+    let assetId = COINGECKO_IDS[assetSym] || assetSym.toLowerCase();
+    
+    // Assuming backend proxy pattern due to Vercel/HTML context
+    // If running locally without proxy, this might fail CORS if calling direct
+    const apiUrl = `/api/history?id=${assetId}&days=30`; 
+    // FALLBACK: direct call if proxy fails or not found (might fail CORS in browser)
+    const directUrl = `https://api.coingecko.com/api/v3/coins/${assetId}/market_chart?vs_currency=usd&days=30`;
+    
+    let prices = [];
+    
+    try {
+        let res = await fetch(apiUrl);
+        if(!res.ok) {
+            console.warn("Proxy history fetch failed, trying direct...");
+            res = await fetch(directUrl);
+        }
+        if(!res.ok) throw new Error("Failed to fetch history");
+        const data = await res.json();
+        prices = data.prices; // [ [timestamp, price], ... ]
+    } catch(e) {
+        container.innerHTML = `<div style="color:var(--bad); padding:20px; text-align:center;">History Load Error: ${e.message}<br><span style="font-size:10px; color:var(--muted)">Check CORS or Proxy settings</span></div>`;
+        return;
+    }
+    
+    // Process Data for Backtest
+    // We assume current Denom Price is constant for simplicity, OR we assume pair price derivation if Denom != USD
+    // Simplification: We only have Asset/USD history. We need Asset/Denom history.
+    // If Denom is BTC, we need BTC history too? 
+    // Approximating: If Denom is BTC, we use the CURRENT Denom Price to back-calculate the pair price.
+    // Ideally we fetch both, but for a quick visual:
+    
+    const histData = prices.map(p => {
+        const date = new Date(p[0]).toLocaleDateString(undefined, {month:'numeric', day:'numeric'});
+        const priceUsd = p[1];
+        // Derive Pair Price (Asset/Denom)
+        // If Denom=USD, pair=priceUsd. If Denom=BTC, pair = priceUsd / denomUsd (Fixed at current)
+        const pairPrice = priceUsd / (denomUsd > 0 ? denomUsd : 1);
+        
+        // Calculate Simulated Exposure
+        const units = getUnitsHeldAt(pairPrice, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode);
+        const expDenom = units * pairPrice;
+        const expPct = (portfolioSize > 0) ? (expDenom / portfolioSize) * 100 : 0;
+        
+        return { x: date, price: priceUsd, expPct };
+    });
+    
+    // Render Chart
+    container.innerHTML = '<canvas id="historyChart"></canvas>';
+    const ctx = document.getElementById('historyChart');
+    
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: histData.map(d => d.x),
+            datasets: [
+                {
+                    label: 'Simulated Exposure %',
+                    data: histData.map(d => d.expPct),
+                    borderColor: '#5bb0ff',
+                    borderWidth: 2,
+                    yAxisID: 'yExp',
+                    pointRadius: 0,
+                    tension: 0.2
+                },
+                {
+                    label: 'Price (USD)',
+                    data: histData.map(d => d.price),
+                    backgroundColor: 'rgba(23, 201, 100, 0.15)', // Filled Area
+                    borderColor: '#17c964',
+                    borderWidth: 1,
+                    fill: true,
+                    yAxisID: 'yPrice',
+                    pointRadius: 0,
+                    tension: 0.2
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                x: {
+                    grid: { display: false },
+                    ticks: { maxTicksLimit: 10, color: '#666' }
+                },
+                yExp: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: { display: true, text: 'Net Exposure %', color: '#5bb0ff' },
+                    grid: { color: '#1a2433' }
+                },
+                yPrice: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    grid: { display: false }
+                }
+            }
+        }
+    });
+}
+
 function generateExposureSchedule() {
   const container = document.getElementById('resultsContainer'); container.innerHTML = '';
   const pmin = Number(document.getElementById('pmin').value), pmax = Number(document.getElementById('pmax').value), stepPct = Number(document.getElementById('intervalPct').value) || 1;
@@ -1331,6 +1407,7 @@ function generateExposureSchedule() {
   const targetMinPct = Number(document.getElementById('targetMinPct').value) || 0, targetMaxPct = Number(document.getElementById('targetMaxPct').value) || 0;
   const distMode = document.getElementById('distMode').value;
   const assetSym = (document.getElementById('assetSelect').value || 'ALT').toUpperCase(), denomSym = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
+  
   if (pmin <= 0 || pmax <= pmin || portfolioSize <= 0) return;
   const rows = [];
   let p = pmin;
@@ -1345,18 +1422,27 @@ function generateExposureSchedule() {
     if(p >= pmax) break; p = p * (1 + stepPct/100); if(p > pmax && p < pmax * 1.01) p = pmax; 
   }
   
-  // HTML Structure
   const html = `
-    <div class="section-header">Exposure Profile & Price Overlay</div>
+    <div class="layout-grid">
+        <div>
+            <div class="section-header">Exposure Profile</div>
+            <div class="card">
+                <div class="chart-container">
+                    <canvas id="exposureChart"></canvas>
+                </div>
+            </div>
+        </div>
+        <div>
+            <div class="section-header">Backtest (30 Days)</div>
+            <div class="card">
+                <div class="chart-container" id="historyChartContainer" style="position:relative;">
+                   <div style="padding:20px; color:var(--muted); text-align:center;">Loading history...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="section-header">Detailed Schedule</div>
     <div class="card">
-        <div class="chart-container">
-            <canvas id="exposureChart"></canvas>
-        </div>
-        <div class="footnote" style="margin-bottom:12px; text-align:center;">
-             <span style="color:#5bb0ff">Blue Line: Planned Exposure %</span> &nbsp;|&nbsp; 
-             <span style="color:#17c964">Green Dashed: ${assetSym} Price (USD)</span> &nbsp;|&nbsp;
-             <span style="color:#fff">White Dashed: Current Price (P₀)</span>
-        </div>
         <div class="scroll">
             <table><thead><tr><th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Price (${assetSym}/USD)</th><th>Net Exposure (Port %)</th><th>Net Exposure (${denomSym})</th><th>Net Exposure (USD)</th></tr></thead>
             <tbody>${rows.map(r => `<tr><td style="text-align:left; color:var(--accent);">${fmt(r.pricePair, 8)}</td><td>$${fmt(r.priceUsd, 2)}</td><td style="color:${r.expPct >= 0 ? 'var(--good)' : 'var(--bad)'}">${fmt(r.expPct, 2)}%</td><td>${fmt(r.expDenom, 4)}</td><td>$${fmt(r.expUsd, 2)}</td></tr>`).join('')}</tbody></table>
@@ -1364,8 +1450,11 @@ function generateExposureSchedule() {
     </div>`;
   const div = document.createElement('div'); div.innerHTML = html; container.appendChild(div);
   
-  // Render Chart
-  setTimeout(() => renderExposureChart(rows, denomSym, assetSym, p0), 100);
+  // Render Charts
+  setTimeout(() => {
+      renderExposureChart(rows, denomSym, assetSym, p0);
+      fetchAndRenderHistory(pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode, assetSym, denomSym, denomUsd);
+  }, 100);
 }
 
 // --- NEW PNL SCHEDULE LOGIC (FIXED FOR ACTUAL CAPITAL) ---
