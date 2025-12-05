@@ -58,6 +58,9 @@
   button.secondary:hover {
     background: #23364d;
   }
+  button.active {
+    background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600;
+  }
   .muted { color:var(--muted); font-size:11px; }
   .pill {
     display:inline-block; padding:3px 7px; border-radius:999px;
@@ -131,9 +134,15 @@
   /* CHART STYLES */
   .chart-container {
     position: relative; 
-    height: 350px; 
+    height: 300px; 
     width: 100%;
     margin-bottom: 16px;
+  }
+  .time-btns {
+      display: flex; gap: 4px; justify-content: flex-end; margin-bottom: 8px;
+  }
+  .time-btns button {
+      font-size: 10px; padding: 2px 8px; border-radius: 4px;
   }
 </style>
 </head>
@@ -983,11 +992,9 @@ function getUnitsHeldAt(px, pmin, pmax, portSize, tMinPct, tMaxPct, mode) {
     const p = Math.max(pmin, Math.min(px, pmax));
 
     if (mode === 'uniform') {
-        // --- FIX START: Linear Exposure Interpolation ---
         const progress = (p - pmin) / (pmax - pmin);
         const currentTargetVal = valMin + (valMax - valMin) * progress;
         return currentTargetVal / p;
-        // --- FIX END ---
     } else if (mode === 'univ3') {
         const deltaU = uMin - uMax;
         if(Math.abs(pmax - pmin) < 1e-9) return uMin;
@@ -1289,19 +1296,28 @@ function renderExposureChart(rows, denomSym, assetSym, p0) {
 }
 
 // --- HISTORICAL CHART LOGIC ---
-async function fetchAndRenderHistory(pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode, assetSym, denomSym, denomUsd) {
+async function fetchAndRenderHistory(days, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode, assetSym, denomSym, denomUsd) {
     const container = document.getElementById('historyChartContainer');
     if(!container) return;
     
-    container.innerHTML = '<div style="color:var(--muted); padding:20px; text-align:center;">Fetching 30-day history...</div>';
+    // Calculate Active Capital for APR
+    const activeBelowPct = Number(document.getElementById('activeUtilBelow').value) || 0;
+    const activeAbovePct = Number(document.getElementById('activeUtilAbove').value) || 0;
+    const aprPct = Number(document.getElementById('aprPct').value) || 0;
+    
+    // We approximate active capital as a weighted average since we don't recalculate the full strat curve for every historical price point (too slow)
+    // Simplified: Assuming 50/50 split of portfolio for utilization calc if unknown, or use max.
+    // Better: Use the simplified logic - user provides APR on "Active Capital".
+    // We will assume "Active Capital" is roughly (ActiveBelow + ActiveAbove)/2 percent of portfolio * PortfolioSize.
+    const activeRatio = (activeBelowPct + activeAbovePct) / 200; // Average of the two %s / 100
+    
+    container.innerHTML = `<div style="color:var(--muted); padding:20px; text-align:center;">Fetching ${days}-day history...</div>`;
     
     let assetId = COINGECKO_IDS[assetSym] || assetSym.toLowerCase();
     
-    // Assuming backend proxy pattern due to Vercel/HTML context
-    // If running locally without proxy, this might fail CORS if calling direct
-    const apiUrl = `/api/history?id=${assetId}&days=30`; 
-    // FALLBACK: direct call if proxy fails or not found (might fail CORS in browser)
-    const directUrl = `https://api.coingecko.com/api/v3/coins/${assetId}/market_chart?vs_currency=usd&days=30`;
+    // CoinGecko API logic
+    const apiUrl = `/api/history?id=${assetId}&days=${days}`; 
+    const directUrl = `https://api.coingecko.com/api/v3/coins/${assetId}/market_chart?vs_currency=usd&days=${days}`;
     
     let prices = [];
     
@@ -1313,39 +1329,61 @@ async function fetchAndRenderHistory(pmin, pmax, portfolioSize, targetMinPct, ta
         }
         if(!res.ok) throw new Error("Failed to fetch history");
         const data = await res.json();
-        prices = data.prices; // [ [timestamp, price], ... ]
+        prices = data.prices; 
     } catch(e) {
         container.innerHTML = `<div style="color:var(--bad); padding:20px; text-align:center;">History Load Error: ${e.message}<br><span style="font-size:10px; color:var(--muted)">Check CORS or Proxy settings</span></div>`;
         return;
     }
     
     // Process Data for Backtest
-    // We assume current Denom Price is constant for simplicity, OR we assume pair price derivation if Denom != USD
-    // Simplification: We only have Asset/USD history. We need Asset/Denom history.
-    // If Denom is BTC, we need BTC history too? 
-    // Approximating: If Denom is BTC, we use the CURRENT Denom Price to back-calculate the pair price.
-    // Ideally we fetch both, but for a quick visual:
+    let cumPnL = 0;
+    let cumYield = 0;
+    let cumYieldPnL = 0;
     
-    const histData = prices.map(p => {
-        const date = new Date(p[0]).toLocaleDateString(undefined, {month:'numeric', day:'numeric'});
+    const histData = prices.map((p, idx) => {
+        const timestamp = p[0];
+        const date = new Date(timestamp).toLocaleDateString(undefined, {month:'numeric', day:'numeric'});
         const priceUsd = p[1];
-        // Derive Pair Price (Asset/Denom)
-        // If Denom=USD, pair=priceUsd. If Denom=BTC, pair = priceUsd / denomUsd (Fixed at current)
         const pairPrice = priceUsd / (denomUsd > 0 ? denomUsd : 1);
         
-        // Calculate Simulated Exposure
         const units = getUnitsHeldAt(pairPrice, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode);
+        
+        // PnL Calculation (Delta PnL)
+        // PnL_t = (Price_t - Price_t-1) * Units_Held_t-1
+        if(idx > 0) {
+            const prevPrice = prices[idx-1][1] / (denomUsd > 0 ? denomUsd : 1);
+            const prevUnits = getUnitsHeldAt(prevPrice, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode);
+            const priceDelta = pairPrice - prevPrice;
+            const stepPnL = priceDelta * prevUnits;
+            cumPnL += stepPnL;
+            
+            // Yield Calculation
+            // dt in days
+            const dt = (timestamp - prices[idx-1][0]) / (1000 * 60 * 60 * 24);
+            const activeCap = portfolioSize * activeRatio; // In Denom
+            const stepYield = activeCap * (aprPct/100) * (dt/365);
+            cumYield += stepYield;
+            cumYieldPnL = cumPnL + cumYield;
+        }
+        
         const expDenom = units * pairPrice;
         const expPct = (portfolioSize > 0) ? (expDenom / portfolioSize) * 100 : 0;
         
-        return { x: date, price: priceUsd, expPct };
+        return { x: date, price: priceUsd, expPct, pnl: cumPnL, totalPnl: cumYieldPnL };
     });
     
-    // Render Chart
-    container.innerHTML = '<canvas id="historyChart"></canvas>';
-    const ctx = document.getElementById('historyChart');
+    // Render Two Charts: Exposure and PnL
+    container.innerHTML = `
+      <div style="margin-bottom:12px;">
+         <canvas id="historyExpChart" height="200"></canvas>
+      </div>
+      <div>
+         <canvas id="historyPnlChart" height="200"></canvas>
+      </div>
+    `;
     
-    new Chart(ctx, {
+    // Chart 1: Exposure
+    new Chart(document.getElementById('historyExpChart'), {
         type: 'line',
         data: {
             labels: histData.map(d => d.x),
@@ -1362,7 +1400,7 @@ async function fetchAndRenderHistory(pmin, pmax, portfolioSize, targetMinPct, ta
                 {
                     label: 'Price (USD)',
                     data: histData.map(d => d.price),
-                    backgroundColor: 'rgba(23, 201, 100, 0.15)', // Filled Area
+                    backgroundColor: 'rgba(23, 201, 100, 0.1)',
                     borderColor: '#17c964',
                     borderWidth: 1,
                     fill: true,
@@ -1377,26 +1415,79 @@ async function fetchAndRenderHistory(pmin, pmax, portfolioSize, targetMinPct, ta
             maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
             scales: {
-                x: {
-                    grid: { display: false },
-                    ticks: { maxTicksLimit: 10, color: '#666' }
+                x: { display:false },
+                yExp: { type: 'linear', display: true, position: 'left', grid: { color: '#1a2433' } },
+                yPrice: { type: 'linear', display: true, position: 'right', grid: { display: false } }
+            },
+            plugins: { title: { display: true, text: 'Historical Exposure Check', color: '#9fb1c7' } }
+        }
+    });
+
+    // Chart 2: PnL
+    new Chart(document.getElementById('historyPnlChart'), {
+        type: 'line',
+        data: {
+            labels: histData.map(d => d.x),
+            datasets: [
+                {
+                    label: `Strategy PnL (${denomSym})`,
+                    data: histData.map(d => d.pnl),
+                    borderColor: '#e08aff',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.2
                 },
-                yExp: {
-                    type: 'linear',
-                    display: true,
-                    position: 'left',
-                    title: { display: true, text: 'Net Exposure %', color: '#5bb0ff' },
-                    grid: { color: '#1a2433' }
-                },
-                yPrice: {
-                    type: 'linear',
-                    display: true,
-                    position: 'right',
-                    grid: { display: false }
+                {
+                    label: `Total PnL w/ Yield (${denomSym})`,
+                    data: histData.map(d => d.totalPnl),
+                    borderColor: '#ffe600', // Gold for Yield
+                    borderDash: [4,4],
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.2
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                x: { ticks: { maxTicksLimit: 10, color: '#666' } },
+                y: { grid: { color: '#1a2433' }, title: { display:true, text:`PnL (${denomSym})` } }
+            },
+            plugins: { 
+                title: { display: true, text: `Strategy Profit Simulation (APR: ${aprPct}%)`, color: '#9fb1c7' },
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                             return ctx.dataset.label + ': ' + Number(ctx.raw).toFixed(4);
+                        }
+                    }
                 }
             }
         }
     });
+}
+
+function updateBacktest(daysStr) {
+   const pmin = Number(document.getElementById('pmin').value);
+   const pmax = Number(document.getElementById('pmax').value);
+   const portfolioSize = Number(document.getElementById('portfolioSize').value);
+   const targetMinPct = Number(document.getElementById('targetMinPct').value);
+   const targetMaxPct = Number(document.getElementById('targetMaxPct').value);
+   const distMode = document.getElementById('distMode').value;
+   const assetSym = (document.getElementById('assetSelect').value || 'ALT').toUpperCase();
+   const denomSym = (document.getElementById('denomSelect').value || 'BTC').toUpperCase();
+   const denomUsd = Number(document.getElementById('denomUsd').value) || 0;
+   
+   // Highlight active button
+   document.querySelectorAll('.time-btns button').forEach(b => {
+       b.classList.remove('active');
+       if(b.textContent.toLowerCase() === daysStr.toLowerCase() || (daysStr==='max' && b.textContent==='MAX')) b.classList.add('active');
+   });
+   
+   fetchAndRenderHistory(daysStr, pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode, assetSym, denomSym, denomUsd);
 }
 
 function generateExposureSchedule() {
@@ -1427,16 +1518,25 @@ function generateExposureSchedule() {
         <div>
             <div class="section-header">Exposure Profile</div>
             <div class="card">
-                <div class="chart-container">
+                <div class="chart-container" style="height:350px;">
                     <canvas id="exposureChart"></canvas>
                 </div>
             </div>
         </div>
         <div>
-            <div class="section-header">Backtest (30 Days)</div>
+            <div class="section-header" style="justify-content:space-between;">
+                <span>Backtest vs History</span>
+            </div>
             <div class="card">
-                <div class="chart-container" id="historyChartContainer" style="position:relative;">
-                   <div style="padding:20px; color:var(--muted); text-align:center;">Loading history...</div>
+                <div class="time-btns">
+                    <button class="secondary" onclick="updateBacktest('30')">30D</button>
+                    <button class="secondary" onclick="updateBacktest('90')">3M</button>
+                    <button class="secondary" onclick="updateBacktest('180')">6M</button>
+                    <button class="secondary" onclick="updateBacktest('365')">1Y</button>
+                    <button class="secondary" onclick="updateBacktest('max')">MAX</button>
+                </div>
+                <div class="chart-container" id="historyChartContainer" style="position:relative; height:420px;">
+                   <div style="padding:20px; color:var(--muted); text-align:center;">Select timeframe to load</div>
                 </div>
             </div>
         </div>
@@ -1450,10 +1550,9 @@ function generateExposureSchedule() {
     </div>`;
   const div = document.createElement('div'); div.innerHTML = html; container.appendChild(div);
   
-  // Render Charts
   setTimeout(() => {
       renderExposureChart(rows, denomSym, assetSym, p0);
-      fetchAndRenderHistory(pmin, pmax, portfolioSize, targetMinPct, targetMaxPct, distMode, assetSym, denomSym, denomUsd);
+      updateBacktest('30'); // Default load 30d
   }, 100);
 }
 
