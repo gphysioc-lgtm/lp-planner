@@ -617,8 +617,8 @@ async function autoFetchPrices(assetSym, denomSym){
 async function loadAssetList(){
   const sel = document.getElementById('assetSelect');
   const statusEl = document.getElementById('sheetStatus');
-  if(!sel || !statusEl || APPS_SCRIPT_URL.includes('YOUR_APPS_SCRIPT')) {
-    statusEl.innerHTML = '<span style="color:var(--bad)">ERROR:</span> Check APPS_SCRIPT_URL.';
+  if(!sel || !statusEl) {
+    statusEl.innerHTML = '<span style="color:var(--bad)">ERROR:</span> Missing elements.';
     return;
   }
 
@@ -626,7 +626,7 @@ async function loadAssetList(){
   sel.innerHTML = '<option value="">– Select asset –</option>';
   
   try{
-    const res = await fetch(APPS_SCRIPT_URL);
+    const res = await fetch('/api/config');
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     
@@ -642,10 +642,12 @@ async function loadAssetList(){
         }
       });
       statusEl.textContent = `Loaded ${data.assets.length} assets.`;
+    } else {
+      statusEl.textContent = 'No assets found.';
     }
   }catch(err){
     console.error('Error loading asset list', err);
-    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load list.`;
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load list: ${err.message}`;
   }
 }
 
@@ -655,22 +657,36 @@ async function loadAssetConfig(symbol){
   statusEl.textContent = `Loading config for ${symbol}...`;
 
   try{
-    const url = `${APPS_SCRIPT_URL}?symbol=${encodeURIComponent(symbol)}`;
-    const res = await fetch(url);
-    if(!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    // Fetch asset config from Google Apps Script and portfolio size from API in parallel
+    const [configRes, portfolioRes] = await Promise.all([
+      fetch(`${APPS_SCRIPT_URL}?symbol=${encodeURIComponent(symbol)}`),
+      fetch('/api/portfolio-size')
+    ]);
 
+    if(!configRes.ok) throw new Error(`Config HTTP ${configRes.status}`);
+    const data = await configRes.json();
     if(data.error) throw new Error(data.error);
 
+    // Get portfolio size from API (in USD)
+    let portfolioSizeUsd = null;
+    if(portfolioRes.ok) {
+      const portfolioData = await portfolioRes.json();
+      if(portfolioData.error) {
+        console.warn('Portfolio size API error:', portfolioData.error);
+      } else if(typeof portfolioData.portfolioSize === 'number') {
+        portfolioSizeUsd = portfolioData.portfolioSize;
+      }
+    } else {
+      console.warn('Portfolio size API unavailable');
+    }
+
+    // Set asset-specific configs from Google Apps Script
     if(typeof data.pmin === 'number') document.getElementById('pmin').value = data.pmin;
     if(typeof data.pmax === 'number') document.getElementById('pmax').value = data.pmax;
-    if(typeof data.portfolioSize === 'number') document.getElementById('portfolioSize').value = data.portfolioSize;
     if(typeof data.targetMinPct === 'number') document.getElementById('targetMinPct').value = data.targetMinPct;
     if(typeof data.targetMaxPct === 'number') document.getElementById('targetMaxPct').value = data.targetMaxPct;
 
-    // --- FIX: Force update of read-only targets after load ---
-    updateAutoTargets();
-
+    // Determine denomination asset
     let denomSym = 'BTC';
     if(data.denomAsset){
       const dSel = document.getElementById('denomSelect');
@@ -680,21 +696,38 @@ async function loadAssetConfig(symbol){
         denomSym = data.denomAsset;
       }
     }
-    
+
+    // Fetch prices to get denomUsd for conversion
     const success = await autoFetchPrices(symbol, denomSym);
+    
+    // Convert portfolio size from USD to denomination currency
+    if(portfolioSizeUsd !== null) {
+      const denomUsd = Number(document.getElementById('denomUsd').value || 0);
+      if(denomUsd > 0) {
+        const portfolioSizeInDenom = portfolioSizeUsd / denomUsd;
+        document.getElementById('portfolioSize').value = portfolioSizeInDenom.toFixed(6);
+      } else {
+        // If denomUsd not available yet, set portfolio size in USD as fallback
+        // User can manually convert or it will update when prices load
+        console.warn('denomUsd not available, portfolio size not converted');
+      }
+    }
     
     const currentAlt = Number(document.getElementById('altUsd').value || 0);
     if((!success || currentAlt === 0) && typeof data.p0 === 'number') {
        document.getElementById('p0').value = data.p0;
        updateUsdFromP0(); 
     }
+
+    // --- FIX: Force update of read-only targets after load ---
+    updateAutoTargets();
     
     fetchLiveExposure();
     generate();
 
   }catch(err){
     console.error('Error loading config', err);
-    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}.`;
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load ${symbol}: ${err.message}`;
   }
 }
 
