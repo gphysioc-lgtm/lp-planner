@@ -319,7 +319,9 @@
   
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<!-- FIXED: UMD Build for Global Access -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js/dist/chart.umd.min.js"></script>
+
 <script>
 // --- START: GOOGLE APPS SCRIPT URL ---
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzqG0z2v6nZZZpuhGVYHR28R71jpKl4psheB3bsMQ1bj2Hc4-590l-7Xgj8LUG6cFryMw/exec';
@@ -1243,8 +1245,22 @@ function generateExposureSchedule() {
   const tableHtml = `<div class="section-header">Exposure Schedule Target</div>${chartHtml}<div class="card"><div class="scroll"><table><thead><tr><th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Price (${assetSym}/USD)</th><th>Net Exposure (Port %)</th><th>Net Exposure (${denomSym})</th><th>Net Exposure (USD)</th></tr></thead><tbody>${rows.map(r => `<tr><td style="text-align:left; color:var(--accent);">${fmt(r.pricePair, 8)}</td><td>$${fmt(r.priceUsd, 2)}</td><td style="color:${r.expPct >= 0 ? 'var(--good)' : 'var(--bad)'}">${fmt(r.expPct, 2)}%</td><td>${fmt(r.expDenom, 4)}</td><td>$${fmt(r.expUsd, 2)}</td></tr>`).join('')}</tbody></table></div></div>`;
   const div = document.createElement('div'); div.innerHTML = tableHtml; container.appendChild(div);
 
-  // Render Chart
+  // Render Chart with Robust Checking
   setTimeout(() => {
+    // 1. Check if Chart.js is loaded
+    if (typeof Chart === 'undefined') {
+        const cEl = document.getElementById('exposureChart');
+        if(cEl) {
+             const ctx = cEl.getContext('2d');
+             ctx.font = "14px sans-serif";
+             ctx.fillStyle = "#ff5d5d";
+             ctx.fillText("Error: Chart.js library failed to load.", 10, 50);
+             ctx.fillStyle = "#9fb1c7";
+             ctx.fillText("Check internet connection or content blockers.", 10, 70);
+        }
+        return;
+    }
+
     const ctx = document.getElementById('exposureChart').getContext('2d');
     if(window.myExposureChart) window.myExposureChart.destroy();
     
@@ -1326,7 +1342,7 @@ function generateExposureSchedule() {
             }
         }
     });
-  }, 50);
+  }, 100);
 }
 
 // --- NEW PNL SCHEDULE LOGIC (FIXED FOR ACTUAL CAPITAL) ---
