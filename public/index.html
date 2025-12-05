@@ -127,6 +127,14 @@
     display: none;
     border: 1px solid #333;
   }
+  
+  /* CHART STYLES */
+  .chart-container {
+    position: relative; 
+    height: 400px; 
+    width: 100%;
+    margin-bottom: 16px;
+  }
 </style>
 </head>
 <body>
@@ -969,19 +977,21 @@ function getUnitsHeldAt(px, pmin, pmax, portSize, tMinPct, tMaxPct, mode) {
     const valMin = portSize * (tMinPct / 100);
     const valMax = portSize * (tMaxPct / 100);
     
-    // We need Units at Min and Units at Max
     const uMin = valMin / pmin;
     const uMax = valMax / pmax;
     
     const p = Math.max(pmin, Math.min(px, pmax));
 
     if (mode === 'uniform') {
-        // FIX: Linear Exposure Interpolation (Value, not Units)
+        // --- FIX START: Linear Exposure Interpolation ---
+        // 1. Calculate progress from 0.0 to 1.0
         const progress = (p - pmin) / (pmax - pmin);
+        // 2. Interpolate the Target Value (BTC/Denom) linearly
         const currentTargetVal = valMin + (valMax - valMin) * progress;
+        // 3. Return Units required to hit that value at current price
         return currentTargetVal / p;
+        // --- FIX END ---
     } else if (mode === 'univ3') {
-        // Uni V3 Logic
         const deltaU = uMin - uMax;
         if(Math.abs(pmax - pmin) < 1e-9) return uMin;
         const invSqrtMin = 1/Math.sqrt(pmin);
@@ -989,7 +999,6 @@ function getUnitsHeldAt(px, pmin, pmax, portSize, tMinPct, tMaxPct, mode) {
         const L = deltaU / (invSqrtMin - invSqrtMax);
         return L * (1/Math.sqrt(p) - 1/Math.sqrt(pmax)) + uMax;
     } else {
-        // "Equal Value" / Logarithmic
         if (pmax <= pmin) return uMin;
         const num = uMin - uMax;
         const den = Math.log(pmax / pmin);
@@ -1172,10 +1181,152 @@ function generate() {
   strategies.forEach(s => renderLPSection(container, s.title, s.data, s.params.denomSymbol, s.params.denomUsd, s.params.assetSymbol, s.id));
 }
 
+// --- CHART RENDERING ---
+function renderExposureChart(rows, denomSym, assetSym, p0) {
+    const canvasId = 'exposureChart';
+    const oldCanvas = document.getElementById(canvasId);
+    
+    // Data extraction
+    const labels = rows.map(r => r.pricePair);
+    const dataExp = rows.map(r => r.expPct);
+    const dataUsdPrice = rows.map(r => r.priceUsd);
+    
+    // Find limits for annotations
+    const pMin = Math.min(...labels);
+    const pMax = Math.max(...labels);
+
+    new Chart(oldCanvas, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Net Exposure %',
+                    data: dataExp,
+                    borderColor: '#5bb0ff',
+                    backgroundColor: 'rgba(91, 176, 255, 0.1)',
+                    yAxisID: 'y',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 6,
+                    fill: true,
+                    tension: 0.2
+                },
+                {
+                    label: `${assetSym} Price (USD)`,
+                    data: dataUsdPrice,
+                    borderColor: '#17c964',
+                    borderDash: [5, 5],
+                    yAxisID: 'y1',
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    pointHoverRadius: 0,
+                    tension: 0.1
+                },
+                {
+                    // Invisible point for Current Price to force X axis range if needed, or better use annotation
+                    label: 'Current Price',
+                    data: [{x: p0, y: 0}], // Mock, will use annotation logic
+                    hidden: true
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            plugins: {
+                tooltip: {
+                    backgroundColor: '#101620',
+                    titleColor: '#fff',
+                    bodyColor: '#ccc',
+                    borderColor: '#333',
+                    borderWidth: 1,
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) {
+                                label += ': ';
+                            }
+                            if (context.parsed.y !== null) {
+                                if(context.dataset.yAxisID === 'y') {
+                                    label += context.parsed.y.toFixed(2) + '%';
+                                } else {
+                                    label += '$' + context.parsed.y.toFixed(2);
+                                }
+                            }
+                            return label;
+                        }
+                    }
+                },
+                legend: {
+                    labels: { color: '#9fb1c7' }
+                }
+            },
+            scales: {
+                x: {
+                    type: 'linear',
+                    display: true,
+                    title: { display: true, text: `Price (${assetSym}/${denomSym})`, color: '#555' },
+                    grid: { color: '#1a2433' },
+                    ticks: { color: '#9fb1c7' }
+                },
+                y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: { display: true, text: 'Net Exposure (%)', color: '#5bb0ff' },
+                    grid: { color: '#1a2433' },
+                    ticks: { color: '#5bb0ff' }
+                },
+                y1: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    title: { display: true, text: 'Price (USD)', color: '#17c964' },
+                    grid: { drawOnChartArea: false },
+                    ticks: { color: '#17c964', callback: function(value) { return '$' + value; } }
+                }
+            },
+            // Draw Vertical Line for Current Price manually
+            animation: {
+                onComplete: function(animation) {
+                    const ctx = animation.chart.ctx;
+                    const chart = animation.chart;
+                    const xAxis = chart.scales.x;
+                    const yAxis = chart.scales.y;
+                    
+                    const xVal = p0;
+                    if(xVal >= xAxis.min && xVal <= xAxis.max) {
+                        const xPix = xAxis.getPixelForValue(xVal);
+                        
+                        ctx.save();
+                        ctx.beginPath();
+                        ctx.moveTo(xPix, yAxis.top);
+                        ctx.lineTo(xPix, yAxis.bottom);
+                        ctx.lineWidth = 1;
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.setLineDash([2, 4]);
+                        ctx.stroke();
+                        ctx.restore();
+                        
+                        ctx.fillStyle = '#fff';
+                        ctx.fillText('P₀', xPix + 4, yAxis.top + 10);
+                    }
+                }
+            }
+        }
+    });
+}
+
 // --- NEW EXPOSURE SCHEDULE LOGIC ---
 function generateExposureSchedule() {
   const container = document.getElementById('resultsContainer'); container.innerHTML = '';
   const pmin = Number(document.getElementById('pmin').value), pmax = Number(document.getElementById('pmax').value), stepPct = Number(document.getElementById('intervalPct').value) || 1;
+  const p0 = Number(document.getElementById('p0').value);
   const denomUsd = Number(document.getElementById('denomUsd').value) || 0, portfolioSize = Number(document.getElementById('portfolioSize').value) || 0;
   const targetMinPct = Number(document.getElementById('targetMinPct').value) || 0, targetMaxPct = Number(document.getElementById('targetMaxPct').value) || 0;
   const distMode = document.getElementById('distMode').value;
@@ -1193,8 +1344,28 @@ function generateExposureSchedule() {
     rows.push({ pricePair: currentPrice, priceUsd: priceUsd, expPct: netExpPct, expDenom: netExpDenom, expUsd: netExpUsd });
     if(p >= pmax) break; p = p * (1 + stepPct/100); if(p > pmax && p < pmax * 1.01) p = pmax; 
   }
-  const html = `<div class="section-header">Exposure Schedule Target</div><div class="card"><div class="scroll"><table><thead><tr><th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Price (${assetSym}/USD)</th><th>Net Exposure (Port %)</th><th>Net Exposure (${denomSym})</th><th>Net Exposure (USD)</th></tr></thead><tbody>${rows.map(r => `<tr><td style="text-align:left; color:var(--accent);">${fmt(r.pricePair, 8)}</td><td>$${fmt(r.priceUsd, 2)}</td><td style="color:${r.expPct >= 0 ? 'var(--good)' : 'var(--bad)'}">${fmt(r.expPct, 2)}%</td><td>${fmt(r.expDenom, 4)}</td><td>$${fmt(r.expUsd, 2)}</td></tr>`).join('')}</tbody></table></div></div>`;
+  
+  // HTML Structure
+  const html = `
+    <div class="section-header">Exposure Profile & Price Overlay</div>
+    <div class="card">
+        <div class="chart-container">
+            <canvas id="exposureChart"></canvas>
+        </div>
+        <div class="footnote" style="margin-bottom:12px; text-align:center;">
+             <span style="color:#5bb0ff">Blue Line: Planned Exposure %</span> &nbsp;|&nbsp; 
+             <span style="color:#17c964">Green Dashed: ${assetSym} Price (USD)</span> &nbsp;|&nbsp;
+             <span style="color:#fff">White Dashed: Current Price (P₀)</span>
+        </div>
+        <div class="scroll">
+            <table><thead><tr><th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Price (${assetSym}/USD)</th><th>Net Exposure (Port %)</th><th>Net Exposure (${denomSym})</th><th>Net Exposure (USD)</th></tr></thead>
+            <tbody>${rows.map(r => `<tr><td style="text-align:left; color:var(--accent);">${fmt(r.pricePair, 8)}</td><td>$${fmt(r.priceUsd, 2)}</td><td style="color:${r.expPct >= 0 ? 'var(--good)' : 'var(--bad)'}">${fmt(r.expPct, 2)}%</td><td>${fmt(r.expDenom, 4)}</td><td>$${fmt(r.expUsd, 2)}</td></tr>`).join('')}</tbody></table>
+        </div>
+    </div>`;
   const div = document.createElement('div'); div.innerHTML = html; container.appendChild(div);
+  
+  // Render Chart
+  setTimeout(() => renderExposureChart(rows, denomSym, assetSym, p0), 100);
 }
 
 // --- NEW PNL SCHEDULE LOGIC (FIXED FOR ACTUAL CAPITAL) ---
