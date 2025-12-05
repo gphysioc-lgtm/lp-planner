@@ -970,34 +970,26 @@ function getUnitsHeldAt(px, pmin, pmax, portSize, tMinPct, tMaxPct, mode) {
     const valMax = portSize * (tMaxPct / 100);
     
     // We need Units at Min and Units at Max
-    // Units = Value(Denom) / Price
     const uMin = valMin / pmin;
     const uMax = valMax / pmax;
     
     const p = Math.max(pmin, Math.min(px, pmax));
 
     if (mode === 'uniform') {
-        // Linear Interpolation of UNITS
-        const slope = (uMax - uMin) / (pmax - pmin);
-        return uMin + slope * (p - pmin);
+        // FIX: Linear Exposure Interpolation (Value, not Units)
+        const progress = (p - pmin) / (pmax - pmin);
+        const currentTargetVal = valMin + (valMax - valMin) * progress;
+        return currentTargetVal / p;
     } else if (mode === 'univ3') {
         // Uni V3 Logic
-        // We need to calculate the implicit L that connects uMin at pMin to uMax at pMax.
         const deltaU = uMin - uMax;
-        
-        // Avoid division by zero
         if(Math.abs(pmax - pmin) < 1e-9) return uMin;
-        
         const invSqrtMin = 1/Math.sqrt(pmin);
         const invSqrtMax = 1/Math.sqrt(pmax);
-        
         const L = deltaU / (invSqrtMin - invSqrtMax);
-        
-        // At price p, Asset amount is:
-        // x = L * (1/sqrt(p) - 1/sqrt(pmax)) + uMax
         return L * (1/Math.sqrt(p) - 1/Math.sqrt(pmax)) + uMax;
     } else {
-        // "Equal Value" / Logarithmic (Old Standard)
+        // "Equal Value" / Logarithmic
         if (pmax <= pmin) return uMin;
         const num = uMin - uMax;
         const den = Math.log(pmax / pmin);
