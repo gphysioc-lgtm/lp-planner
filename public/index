@@ -319,9 +319,7 @@
   
 </div>
 
-<!-- FIXED: UMD Build for Global Access -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js/dist/chart.umd.min.js"></script>
-
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 // --- START: GOOGLE APPS SCRIPT URL ---
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzqG0z2v6nZZZpuhGVYHR28R71jpKl4psheB3bsMQ1bj2Hc4-590l-7Xgj8LUG6cFryMw/exec';
@@ -464,11 +462,6 @@ async function fetchLiveExposure() {
   if(indEl) indEl.style.display = 'block';
   
   try {
-    // Check if running in an environment where relative API paths might fail
-    if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
-         throw new Error("Offline/Blob environment - Skipping API");
-    }
-
     const res = await fetch('/api/exposure');
     if (!res.ok) throw new Error(`Error ${res.status}`);
     
@@ -519,9 +512,9 @@ async function fetchLiveExposure() {
     }
 
   } catch (err) {
-    console.warn("Live Exposure Fetch Skipped/Failed:", err.message);
-    statusEl.textContent = `Offline / Manual Input Mode`;
-    statusEl.style.color = 'var(--muted)';
+    console.error(err);
+    statusEl.textContent = `Fetch failed: ${err.message}`;
+    statusEl.style.color = 'var(--bad)';
   } finally {
     if(indEl) indEl.style.display = 'none';
   }
@@ -537,15 +530,12 @@ function triggerAutoFetch() {
 async function fetchPriceBatch(ids) {
     if(!ids) return {};
     try {
-        if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
-            return null; // Return null gracefully in offline mode
-        }
         const url = `/api/price?ids=${encodeURIComponent(ids)}&vs_currencies=usd`;
         const res = await fetch(url);
         if(!res.ok) throw new Error(res.statusText);
         return await res.json();
     } catch(e) {
-        console.warn("Batch fetch failed (likely offline):", e);
+        console.warn("Batch fetch failed:", e);
         return null;
     }
 }
@@ -569,8 +559,8 @@ async function autoFetchPrices(assetSym, denomSym){
 
   try {
     if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
-      statusEl.innerHTML = '<span style="color:var(--warn)">(Offline Mode)</span>';
-      return false; // Safely exit without error
+      statusEl.innerHTML = '<span style="color:var(--warn)">(Live prices require Vercel)</span>';
+      return false;
     }
     
     if (isUsd) {
@@ -636,11 +626,6 @@ async function loadAssetList(){
   sel.innerHTML = '<option value="">– Select asset –</option>';
   
   try{
-    // Check environment first
-    if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') {
-         throw new Error("Local/Blob environment detected");
-    }
-
     const res = await fetch('/api/config');
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -661,17 +646,8 @@ async function loadAssetList(){
       statusEl.textContent = 'No assets found.';
     }
   }catch(err){
-    console.warn('API/Config fetch failed (using fallback list):', err.message);
-    // FALLBACK: Use keys from COINGECKO_IDS
-    const fallbackAssets = Object.keys(COINGECKO_IDS).sort();
-    fallbackAssets.forEach(sym => {
-        const opt = document.createElement('option');
-        opt.value = sym;
-        opt.textContent = sym;
-        sel.appendChild(opt);
-    });
-    statusEl.textContent = `Loaded ${fallbackAssets.length} assets (Offline Mode).`;
-    statusEl.style.color = 'var(--warn)';
+    console.error('Error loading asset list', err);
+    statusEl.innerHTML = `<span style="color:var(--bad)">ERROR:</span> Failed to load list: ${err.message}`;
   }
 }
 
@@ -681,18 +657,10 @@ async function loadAssetConfig(symbol){
   statusEl.textContent = `Loading config for ${symbol}...`;
 
   try{
-    // Mock the portfolio fetch wrapper to prevent crash
-    const fetchPortfolioSize = async () => {
-        try {
-            if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') return { ok: false };
-            return await fetch('/api/portfolio-size');
-        } catch(e) { return { ok: false }; }
-    };
-
     // Fetch asset config from Google Apps Script and portfolio size from API in parallel
     const [configRes, portfolioRes] = await Promise.all([
       fetch(`${APPS_SCRIPT_URL}?symbol=${encodeURIComponent(symbol)}`),
-      fetchPortfolioSize()
+      fetch('/api/portfolio-size')
     ]);
 
     if(!configRes.ok) throw new Error(`Config HTTP ${configRes.status}`);
@@ -702,14 +670,12 @@ async function loadAssetConfig(symbol){
     // Get portfolio size from API (in USD)
     let portfolioSizeUsd = null;
     if(portfolioRes.ok) {
-      try {
-          const portfolioData = await portfolioRes.json();
-          if(portfolioData.error) {
-            console.warn('Portfolio size API error:', portfolioData.error);
-          } else if(typeof portfolioData.portfolioSize === 'number') {
-            portfolioSizeUsd = portfolioData.portfolioSize;
-          }
-      } catch(e) { console.warn("Failed parsing portfolio json", e); }
+      const portfolioData = await portfolioRes.json();
+      if(portfolioData.error) {
+        console.warn('Portfolio size API error:', portfolioData.error);
+      } else if(typeof portfolioData.portfolioSize === 'number') {
+        portfolioSizeUsd = portfolioData.portfolioSize;
+      }
     } else {
       console.warn('Portfolio size API unavailable');
     }
@@ -1235,114 +1201,8 @@ function generateExposureSchedule() {
     rows.push({ pricePair: currentPrice, priceUsd: priceUsd, expPct: netExpPct, expDenom: netExpDenom, expUsd: netExpUsd });
     if(p >= pmax) break; p = p * (1 + stepPct/100); if(p > pmax && p < pmax * 1.01) p = pmax; 
   }
-
-  // --- CHART INJECTION ---
-  const chartHtml = `
-    <div class="card" style="margin-bottom:14px; position:relative; min-height:300px;">
-        <canvas id="exposureChart"></canvas>
-    </div>
-  `;
-  const tableHtml = `<div class="section-header">Exposure Schedule Target</div>${chartHtml}<div class="card"><div class="scroll"><table><thead><tr><th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Price (${assetSym}/USD)</th><th>Net Exposure (Port %)</th><th>Net Exposure (${denomSym})</th><th>Net Exposure (USD)</th></tr></thead><tbody>${rows.map(r => `<tr><td style="text-align:left; color:var(--accent);">${fmt(r.pricePair, 8)}</td><td>$${fmt(r.priceUsd, 2)}</td><td style="color:${r.expPct >= 0 ? 'var(--good)' : 'var(--bad)'}">${fmt(r.expPct, 2)}%</td><td>${fmt(r.expDenom, 4)}</td><td>$${fmt(r.expUsd, 2)}</td></tr>`).join('')}</tbody></table></div></div>`;
-  const div = document.createElement('div'); div.innerHTML = tableHtml; container.appendChild(div);
-
-  // Render Chart with Robust Checking
-  setTimeout(() => {
-    // 1. Check if Chart.js is loaded
-    if (typeof Chart === 'undefined') {
-        const cEl = document.getElementById('exposureChart');
-        if(cEl) {
-             const ctx = cEl.getContext('2d');
-             ctx.font = "14px sans-serif";
-             ctx.fillStyle = "#ff5d5d";
-             ctx.fillText("Error: Chart.js library failed to load.", 10, 50);
-             ctx.fillStyle = "#9fb1c7";
-             ctx.fillText("Check internet connection or content blockers.", 10, 70);
-        }
-        return;
-    }
-
-    const ctx = document.getElementById('exposureChart').getContext('2d');
-    if(window.myExposureChart) window.myExposureChart.destroy();
-    
-    window.myExposureChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: rows.map(r => fmt(r.pricePair, 6)),
-            datasets: [
-                {
-                    label: `Net Exposure (${denomSym})`,
-                    data: rows.map(r => r.expDenom),
-                    borderColor: '#5bb0ff',
-                    backgroundColor: 'rgba(91, 176, 255, 0.1)',
-                    yAxisID: 'y',
-                    fill: true,
-                    tension: 0.1
-                },
-                {
-                    label: 'Exposure (% of Port)',
-                    data: rows.map(r => r.expPct),
-                    borderColor: '#17c964',
-                    borderDash: [5, 5],
-                    yAxisID: 'y1',
-                    tension: 0.1,
-                    pointRadius: 0
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode: 'index', intersect: false },
-            scales: {
-                y: {
-                    type: 'linear',
-                    display: true,
-                    position: 'left',
-                    title: { display: true, text: `Exposure (${denomSym})`, color:'#9fb1c7' },
-                    grid: { color: '#1a2433' },
-                    ticks: { color: '#9fb1c7' }
-                },
-                y1: {
-                    type: 'linear',
-                    display: true,
-                    position: 'right',
-                    title: { display: true, text: 'Portfolio %', color:'#9fb1c7' },
-                    grid: { drawOnChartArea: false },
-                    ticks: { color: '#9fb1c7' }
-                },
-                x: {
-                    title: { display: true, text: `Price (${assetSym}/${denomSym})`, color:'#9fb1c7' },
-                    grid: { color: '#1a2433' },
-                    ticks: { color: '#9fb1c7' }
-                }
-            },
-            plugins: {
-                legend: { labels: { color: '#e8eef6' } },
-                tooltip: {
-                    backgroundColor: 'rgba(11, 15, 20, 0.95)',
-                    titleColor: '#e8eef6',
-                    bodyColor: '#e8eef6',
-                    borderColor: '#233142',
-                    borderWidth: 1,
-                    callbacks: {
-                        label: function(context) {
-                            let label = context.dataset.label || '';
-                            if (label) label += ': ';
-                            if (context.parsed.y !== null) label += fmt(context.parsed.y, 4);
-                            if (context.datasetIndex === 1) label += '%';
-                            return label;
-                        },
-                        afterBody: function(tooltipItems) {
-                           const idx = tooltipItems[0].dataIndex;
-                           const row = rows[idx];
-                           return `USD Value: $${fmt(row.expUsd, 2)}`;
-                        }
-                    }
-                }
-            }
-        }
-    });
-  }, 100);
+  const html = `<div class="section-header">Exposure Schedule Target</div><div class="card"><div class="scroll"><table><thead><tr><th style="text-align:left">Price (${assetSym}/${denomSym})</th><th>Price (${assetSym}/USD)</th><th>Net Exposure (Port %)</th><th>Net Exposure (${denomSym})</th><th>Net Exposure (USD)</th></tr></thead><tbody>${rows.map(r => `<tr><td style="text-align:left; color:var(--accent);">${fmt(r.pricePair, 8)}</td><td>$${fmt(r.priceUsd, 2)}</td><td style="color:${r.expPct >= 0 ? 'var(--good)' : 'var(--bad)'}">${fmt(r.expPct, 2)}%</td><td>${fmt(r.expDenom, 4)}</td><td>$${fmt(r.expUsd, 2)}</td></tr>`).join('')}</tbody></table></div></div>`;
+  const div = document.createElement('div'); div.innerHTML = html; container.appendChild(div);
 }
 
 // --- NEW PNL SCHEDULE LOGIC (FIXED FOR ACTUAL CAPITAL) ---
