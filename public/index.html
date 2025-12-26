@@ -216,11 +216,7 @@
           </div>
         </div>
 
-        <div class="row4" style="margin-top:6px;">
-          <div>
-            <label>Interval size (%)</label>
-            <input type="number" id="intervalPct" step="0.01" value="1">
-          </div>
+        <div class="row4" style="margin-top:6px; grid-template-columns:1.4fr 1fr 1fr 1fr 1fr;">
           <div style="position:relative;">
             <label>Current Net Exposure (<span class="denomLabelShort">BTC</span>)
               <span class="muted">(ALT + short, before LP)</span>
@@ -232,6 +228,14 @@
             <div id="fetchStatus" style="font-size:10px; color:var(--warn); margin-top:2px; height:14px;"></div>
           </div>
           <div>
+            <label>Target @ P₀ (<span class="denomLabelShort">BTC</span>, auto)</label>
+            <input type="number" id="targetP0" step="0.0001" value="0" readonly>
+          </div>
+          <div>
+            <label>Gap vs Target @ P₀ (<span class="denomLabelShort">BTC</span>, auto)</label>
+            <input type="number" id="gapP0" step="0.0001" value="0" readonly>
+          </div>
+          <div>
             <label>Target @ Pmin (<span class="denomLabelShort">BTC</span>, auto)</label>
             <input type="number" id="targetMin" step="0.0001" value="0" readonly>
           </div>
@@ -241,7 +245,35 @@
           </div>
         </div>
 
-        <div class="row4" style="margin-top:6px;">
+	        <div class="row4" style="margin-top:6px;">
+	          <div style="position:relative;">
+	            <label>Denom Current Net Exposure (<span class="denomLabelShort">BTC</span>)
+	              <span class="muted">(auto)</span>
+	            </label>
+            <input type="number" id="denomCurrentE" step="0.0001" value="0">
+            <div id="denomFetchStatus" style="font-size:10px; color:var(--muted); margin-top:2px; height:14px;"></div>
+          </div>
+          <div>
+	            <label>Denom Target Exposure (<span class="denomLabelShort">BTC</span>)
+	              <span class="muted">(manual)</span>
+	            </label>
+            <input type="number" id="denomTargetE" step="0.0001" value="0">
+          </div>
+          <div>
+	            <label>Denom Gap (Cur − Tgt, <span class="denomLabelShort">BTC</span>)</label>
+            <input type="number" id="denomGapE" step="0.0001" value="0" readonly>
+          </div>
+          <div>
+            <label>Denom Gap (USD)</label>
+            <input type="number" id="denomGapUsd" step="0.01" value="0" readonly>
+          </div>
+        </div>
+
+        <div class="row4" style="margin-top:6px; grid-template-columns:repeat(5,1fr);">
+          <div>
+            <label>Interval size (%)</label>
+            <input type="number" id="intervalPct" step="0.01" value="1">
+          </div>
           <div>
             <label>Precision decimals</label>
             <input type="number" id="dec" step="1" value="4">
@@ -421,6 +453,8 @@ function updateP0FromUsd() {
         const ratio = altUsd / denomUsd;
         p0El.value = ratio.toFixed(10); 
     }
+    // Keep target @ P₀ and gap fields in sync
+    updateAutoTargets();
 }
 
 function updateUsdFromP0() {
@@ -431,6 +465,8 @@ function updateUsdFromP0() {
         const val = p0 * denomUsd;
         altUsdEl.value = val.toFixed(6);
     }
+    // Keep target @ P₀ and gap fields in sync
+    updateAutoTargets();
 }
 
 function updateAutoTargets() {
@@ -441,21 +477,116 @@ function updateAutoTargets() {
     const targetMaxEl = document.getElementById('targetMax');
     const tMin = portSize * (minPct / 100.0);
     const tMax = portSize * (maxPct / 100.0);
-    targetMinEl.value = tMin.toFixed(4);
-    targetMaxEl.value = tMax.toFixed(4);
+    if(targetMinEl) targetMinEl.value = tMin.toFixed(4);
+    if(targetMaxEl) targetMaxEl.value = tMax.toFixed(4);
+
+    // --- Target @ P₀ (Current Price) ---
+    const pmin = Number(document.getElementById('pmin').value) || 0;
+    const pmax = Number(document.getElementById('pmax').value) || 0;
+    const p0   = Number(document.getElementById('p0').value) || 0;
+    const distModeEl = document.getElementById('distMode');
+    const distMode = distModeEl ? distModeEl.value : 'uniform';
+    const targetP0El = document.getElementById('targetP0');
+    const gapP0El = document.getElementById('gapP0');
+
+    let targetP0 = 0;
+    if(targetP0El) {
+        if(portSize > 0 && pmin > 0 && pmax > pmin && p0 > 0) {
+            const unitsAtP0 = getUnitsHeldAt(p0, pmin, pmax, portSize, minPct, maxPct, distMode);
+            targetP0 = unitsAtP0 * p0;
+        }
+        targetP0El.value = targetP0.toFixed(4);
+    }
+
+    if(gapP0El) {
+        const curE = Number(document.getElementById('currentE').value) || 0;
+        const gap = curE - targetP0;
+        gapP0El.value = gap.toFixed(4);
+        gapP0El.style.color = gap > 0 ? 'var(--good)' : (gap < 0 ? 'var(--bad)' : 'var(--ink)');
+    }
+
+    // --- Denom exposure alignment (Current vs Target) ---
+    const denomUsd = Number(document.getElementById('denomUsd').value) || 0;
+    const denomCurEl = document.getElementById('denomCurrentE');
+    const denomTgtEl = document.getElementById('denomTargetE');
+    const denomGapEl = document.getElementById('denomGapE');
+    const denomGapUsdEl = document.getElementById('denomGapUsd');
+    if(denomCurEl && denomTgtEl && denomGapEl) {
+        const cur = Number(denomCurEl.value) || 0;
+        const tgt = Number(denomTgtEl.value) || 0;
+        const gap = cur - tgt;
+        denomGapEl.value = gap.toFixed(6);
+        denomGapEl.style.color = gap > 0 ? 'var(--good)' : (gap < 0 ? 'var(--bad)' : 'var(--ink)');
+        if(denomGapUsdEl) {
+            denomGapUsdEl.value = denomUsd > 0 ? (gap * denomUsd).toFixed(2) : '0.00';
+            denomGapUsdEl.style.color = denomGapEl.style.color;
+        }
+    }
+}
+
+function denomTargetStorageKey(sym){
+    return `lpPlanner_denomTarget_${String(sym || '').toUpperCase()}`;
+}
+
+function restoreDenomTarget(sym){
+    const el = document.getElementById('denomTargetE');
+    if(!el) return;
+    try {
+        const v = localStorage.getItem(denomTargetStorageKey(sym));
+        if(v !== null && v !== '') el.value = v;
+    } catch(e) {}
+}
+
+function persistDenomTarget(sym){
+    const el = document.getElementById('denomTargetE');
+    if(!el) return;
+    try {
+        localStorage.setItem(denomTargetStorageKey(sym), String(el.value || ''));
+    } catch(e) {}
+}
+
+function extractUsdExposure(row){
+    if(!row || typeof row !== 'object') return NaN;
+    const candidates = [
+        'net_exposure_usd_from_base',
+        'net_exposure_usd',
+        'netExposureUsd',
+        'net_exposure_usd_total',
+        'net_usd',
+        'netExposureUSD'
+    ];
+    for(const k of candidates){
+        if(row[k] !== undefined && row[k] !== null && row[k] !== '') {
+            const v = Number(row[k]);
+            if(isFinite(v)) return v;
+        }
+    }
+    return NaN;
 }
 
 // --- LIVE EXPOSURE & PRICE FETCHING ---
 let fetchTimeout = null;
 async function fetchLiveExposure() {
-  const assetSym = document.getElementById('assetSelect').value;
+  const assetSymRaw = (document.getElementById('assetSelect').value || '').trim();
+  const denomSymRaw = (document.getElementById('denomSelect').value || '').trim();
+  const denomSym = denomSymRaw.toUpperCase();
   const denomUsd = Number(document.getElementById('denomUsd').value || 0);
   const statusEl = document.getElementById('fetchStatus');
   const currentEEl = document.getElementById('currentE');
+  const denomCurEl = document.getElementById('denomCurrentE');
+  const denomStatusEl = document.getElementById('denomFetchStatus');
   const indEl = document.getElementById('fetchIndicator');
 
-  if(!assetSym || assetSym === "") { statusEl.textContent = ''; return; }
+  // If we don't have a denom price yet, we can't convert USD exposures to denom units.
   if(denomUsd <= 0) return;
+
+  // If nothing is selected, do nothing.
+  if(!assetSymRaw && !denomSym) {
+      if(statusEl) statusEl.textContent = '';
+      if(denomStatusEl) denomStatusEl.textContent = '';
+      return;
+  }
+
   if(indEl) indEl.style.display = 'block';
   
   try {
@@ -474,35 +605,88 @@ async function fetchLiveExposure() {
         else if (Array.isArray(rawData.result)) dataList = rawData.result;
         else { dataList = [rawData]; }
     }
-    const searchSym = assetSym.toUpperCase();
-    const found = dataList.find(p => {
+    const findBySymbol = (symUpper) => dataList.find(p => {
         const s1 = (p.symbol || '').toUpperCase();
         const s2 = (p.ticker || '').toUpperCase();
         const s3 = (p.asset || '').toUpperCase();
-        const s4 = (p.name || '').toUpperCase(); 
-        return s1 === searchSym || s2 === searchSym || s3 === searchSym || s4.includes(searchSym);
+        const s4 = (p.name || '').toUpperCase();
+        return s1 === symUpper || s2 === symUpper || s3 === symUpper || s4.includes(symUpper);
     });
 
-    if (found) {
-        const usdVal = Number(found.net_exposure_usd_from_base || 0);
-        if (!isNaN(usdVal) && usdVal !== 0) {
-            const denomExposure = usdVal / denomUsd;
-            currentEEl.value = denomExposure.toFixed(6);
-            statusEl.textContent = `Auto-Loaded: $${fmt(usdVal, 0)} exposure`;
-            statusEl.style.color = 'var(--good)';
-            generate();
+    // --- 1) Numerator asset (ALT) exposure (in denom units) ---
+    if(assetSymRaw) {
+        const searchSym = assetSymRaw.toUpperCase();
+        const foundAsset = findBySymbol(searchSym);
+        if (foundAsset) {
+            const usdVal = extractUsdExposure(foundAsset);
+            if (isFinite(usdVal)) {
+                const denomExposure = usdVal / denomUsd;
+                if(currentEEl) {
+                    currentEEl.value = denomExposure.toFixed(6);
+                    currentEEl.style.color = denomExposure >= 0 ? 'var(--good)' : 'var(--bad)';
+                }
+                if(statusEl) {
+                    statusEl.textContent = `Auto-Loaded: $${fmt(usdVal, 0)} exposure`;
+                    statusEl.style.color = usdVal >= 0 ? 'var(--good)' : 'var(--bad)';
+                }
+            } else {
+                if(statusEl) {
+                    statusEl.textContent = `Found ${assetSymRaw}, but exposure field missing.`;
+                    statusEl.style.color = 'var(--warn)';
+                }
+            }
         } else {
-            statusEl.textContent = `Found ${assetSym}, but 0 exposure.`;
-            statusEl.style.color = 'var(--warn)';
+            if(statusEl) {
+                statusEl.textContent = `No position found for ${assetSymRaw}.`;
+                statusEl.style.color = 'var(--muted)';
+            }
         }
     } else {
-        statusEl.textContent = `No position found for ${assetSym}.`;
-        statusEl.style.color = 'var(--muted)';
+        if(statusEl) statusEl.textContent = '';
     }
+
+    // --- 2) Denom asset exposure (in denom units) ---
+    if(denomSym && denomCurEl) {
+        const foundDenom = findBySymbol(denomSym);
+        if(foundDenom) {
+            const usdVal = extractUsdExposure(foundDenom);
+            if(isFinite(usdVal)) {
+                const denomUnits = usdVal / denomUsd;
+                denomCurEl.value = denomUnits.toFixed(6);
+                denomCurEl.style.color = denomUnits >= 0 ? 'var(--good)' : 'var(--bad)';
+                if(denomStatusEl) {
+                    denomStatusEl.textContent = `Auto-Loaded: $${fmt(usdVal, 0)} net`;
+                    denomStatusEl.style.color = usdVal >= 0 ? 'var(--good)' : 'var(--bad)';
+                }
+            } else {
+                if(denomStatusEl) {
+                    denomStatusEl.textContent = `Found ${denomSym}, but exposure field missing.`;
+                    denomStatusEl.style.color = 'var(--warn)';
+                }
+            }
+        } else {
+            if(denomStatusEl) {
+                denomStatusEl.textContent = `No position found for ${denomSym}.`;
+                denomStatusEl.style.color = 'var(--muted)';
+            }
+        }
+    }
+
+    // Keep derived fields in sync (Target @ P₀, gaps, etc.)
+    updateAutoTargets();
+
+    // Re-render schedule if an asset is selected.
+    if(assetSymRaw) generate();
   } catch (err) {
     console.error(err);
-    statusEl.textContent = `Fetch failed: ${err.message}`;
-    statusEl.style.color = 'var(--bad)';
+    if(statusEl) {
+        statusEl.textContent = `Fetch failed: ${err.message}`;
+        statusEl.style.color = 'var(--bad)';
+    }
+    if(denomStatusEl) {
+        denomStatusEl.textContent = `Fetch failed: ${err.message}`;
+        denomStatusEl.style.color = 'var(--bad)';
+    }
   } finally {
     if(indEl) indEl.style.display = 'none';
   }
@@ -627,8 +811,10 @@ async function loadAssetConfig(symbol){
     let denomSym = 'BTC';
     if(data.denomAsset){
       const dSel = document.getElementById('denomSelect');
-      if(dSel){ dSel.value = data.denomAsset; updateDenomLabels(data.denomAsset); denomSym = data.denomAsset; }
+	      if(dSel){ dSel.value = data.denomAsset; updateDenomLabels(data.denomAsset); denomSym = data.denomAsset; }
     }
+	    // Restore saved denom target exposure (per-denom) if available
+	    restoreDenomTarget(denomSym);
     const success = await autoFetchPrices(symbol, denomSym);
     if(portfolioSizeUsd !== null) {
       const denomUsd = Number(document.getElementById('denomUsd').value || 0);
@@ -1533,12 +1719,29 @@ function generatePnLSchedule() {
   if (assetSel) assetSel.addEventListener('change', () => loadAssetConfig(assetSel.value));
   if (denomSel) denomSel.addEventListener('change', () => {
       updateDenomLabels(denomSel.value);
+      // Denom target exposures are manual, so we restore them per-denom.
+      restoreDenomTarget(denomSel.value);
+      updateAutoTargets();
       autoFetchPrices(assetSel ? assetSel.value : '', denomSel.value);
   });
-  ['portfolioSize', 'targetMinPct', 'targetMaxPct'].forEach(id => {
+
+  // Persist denom target exposure per denom asset (so swapping denom doesn't wipe your target).
+  const denomTgtEl = document.getElementById('denomTargetE');
+  if(denomTgtEl && denomSel){
+      restoreDenomTarget(denomSel.value);
+      denomTgtEl.addEventListener('input', () => persistDenomTarget(denomSel.value));
+  }
+
+  // Keep derived fields (Target @ P₀, gaps, denom gap) in sync.
+  ['portfolioSize', 'targetMinPct', 'targetMaxPct', 'pmin', 'pmax', 'currentE', 'denomCurrentE', 'denomTargetE'].forEach(id => {
       const el = document.getElementById(id);
       if(el) el.addEventListener('input', updateAutoTargets);
   });
+  const distModeEl = document.getElementById('distMode');
+  if(distModeEl) distModeEl.addEventListener('change', updateAutoTargets);
+
+  // Initial sync so fields don't show stale zeros.
+  updateAutoTargets();
   loadAssetList();
   if (denomSel) autoFetchPrices('', denomSel.value);
 })();
